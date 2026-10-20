@@ -1,0 +1,72 @@
+MOBİLYA CAD  —  GitHub + PWABuilder ile APK yapma rehberi
+=========================================================
+
+PAKETİN İÇİNDEKİLER
+  index.html     Uygulamanın kendisi (Giriş = Çizgi CAD, Tasarla = 3D Mobilya Studio)
+  manifest.json  Uygulama adı, rengi, ikon bilgileri
+  sw.js          İnternetsiz açılmayı sağlar
+  icons/         Uygulama ikonları
+  lib/           3D motoru, ikonlar, PDF kütüphanesi (hepsi pakette, internet gerekmez)
+  .nojekyll      GitHub'ın dosyaları bozmaması için (boş dosya)
+
+Hepsini olduğu gibi, klasör yapısını bozmadan yükle.
+
+
+1) GITHUB'A YÜKLE (bilgisayardan yapman daha kolay)
+  1. github.com'a gir > sağ üstte "+" > "New repository".
+  2. Repository name:  KULLANICIADIN.github.io   (kendi kullanıcı adın, küçük harf)
+     Public seç, "Create repository".
+     ÖNEMLİ: Adı tam olarak böyle olmalı. Böylece adresin https://KULLANICIADIN.github.io olur.
+  3. "uploading an existing file" bağlantısına tıkla. Zip'i aç, içindeki HER ŞEYİ
+     (index.html, manifest.json, sw.js, icons ve lib klasörleri) pencereye sürükle.
+     "Commit changes" de.
+  4. .nojekyll dosyası yüklenmediyse (gizli dosya olabilir):
+     "Add file" > "Create new file" > adı  .nojekyll  yaz > boş bırak > Commit.
+  5. Settings > Pages > Source: "Deploy from a branch" > Branch: main, klasör: / (root) > Save.
+  6. 1-3 dakika sonra https://KULLANICIADIN.github.io açılır.
+  7. Telefonda Chrome ile bu adresi aç. Çalışıyorsa menüden "Uygulamayı yükle" ile de dene.
+
+
+2) PWABUILDER İLE APK YAP
+  1. pwabuilder.com'a gir, adresini (https://KULLANICIADIN.github.io) yaz, "Start".
+  2. Manifest ve Service Worker kısımları yeşil/tamam görünmeli.
+  3. "Package for stores" > "Android" > "Generate Package" kısmında:
+       Package ID : com.emre.mobilyacad   (küçük harf, noktalı; sen de seçebilirsin, sonra değişmez)
+       App name   : Mobilya CAD
+       Version    : 1.0.0      Version code: 1
+       Signing key: "Create new"
+     "Generate" / "Download".
+  4. İnen zip'in içinde:
+       *.apk                 Doğrudan telefona/tablete kurulur
+       *.aab                 Play Store için (şimdilik gerekmez)
+       signing.keystore + signing-key-info.txt   >>> MUTLAKA SAKLA (yedekle).
+         Uygulamayı sonra güncellemek istersen aynı anahtar gerekir.
+       assetlinks.json       Aşağıdaki 3. adımda kullanılacak
+
+
+3) ADRES ÇUBUĞUNU KALDIRMAK İÇİN (tam ekran uygulama)
+  1. GitHub'da repona gir > "Add file" > "Create new file".
+  2. Dosya adı kutusuna tam olarak  .well-known/assetlinks.json  yaz
+     ("/" işareti klasörü kendisi oluşturur).
+  3. PWABuilder zip'indeki assetlinks.json'ın içeriğini yapıştır > Commit.
+  Bunu yapmazsan uygulama yine çalışır, ama üstte adres çubuğuyla açılır.
+
+
+4) SAMSUNG TELEFON VE TABLETE KUR
+  1. .apk dosyasını telefona/tablete aktar (USB, Google Drive, e-posta, WhatsApp "kendime").
+  2. Dosyaya dokun. "Bilinmeyen kaynaklardan kurulum" izni sorarsa izin ver ve kur.
+  3. İlk açılışta mikrofon (Sesle Çiz) ve kamera/fotoğraf izinleri sorulursa "İzin ver" de.
+  Aynı APK hem telefonda hem tablette çalışır.
+
+
+GÜNCELLEME
+  Yeni bir index.html aldığında GitHub'da aynı dosyanın üstüne yükle
+  (Add file > Upload files, aynı adla). İnternet varken uygulamayı aç; yeni sürüm gelir
+  (bazen bir kez kapatıp açmak gerekir). APK'yı yeniden yapmana gerek yok.
+  Yeni bir dosya/kütüphane eklenirse sw.js içindeki  mobilya-cad-v1  adını v2 yap.
+
+DİKKAT
+  - Çizimlerin ve fotoğrafların o cihazın içinde saklanır. Telefon ile tablet birbirini görmez.
+    Uygulamayı silersen veya verilerini temizlersen çizimler gider.
+    Önemli işleri PDF veya CSV olarak dışa aktarıp sakla.
+  - Uygulama internetsiz de açılır.
