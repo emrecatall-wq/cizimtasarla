@@ -1,14 +1,10 @@
 // Mobilya CAD servis çalışanı: uygulama internetsiz de açılır.
 // index.html önce internetten denenir (güncelleme gelsin), olmazsa kayıtlıdan açılır.
 // Kütüphane ve ikonlar kayıtlıdan gelir. Yeni dosya/kütüphane eklersen CACHE adını değiştir (v1 -> v2).
-const CACHE = 'mobilya-cad-v2';
+const CACHE = 'mobilya-cad-v3';
 const ASSETS = [
   './', 'index.html', 'manifest.json',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png',
-  'lib/tailwind.css', 'lib/three.min.js', 'lib/OrbitControls.js', 'lib/jspdf.umd.min.js',
-  'lib/fontawesome/css/all.min.css',
-  'lib/fontawesome/webfonts/fa-solid-900.woff2', 'lib/fontawesome/webfonts/fa-regular-400.woff2',
-  'lib/fontawesome/webfonts/fa-brands-400.woff2', 'lib/fontawesome/webfonts/fa-v4compatibility.woff2'
 ];
 
 self.addEventListener('install', e => {

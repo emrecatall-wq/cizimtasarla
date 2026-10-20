@@ -6,7 +6,7 @@ PAKETİN İÇİNDEKİLER
   manifest.json  Uygulama adı, rengi, ikon bilgileri
   sw.js          İnternetsiz açılmayı sağlar
   icon-*.png     Uygulama ikonları (ana dizinde)
-  lib/           3D motoru, ikonlar, PDF kütüphanesi (hepsi pakette, internet gerekmez)
+
   .nojekyll      GitHub'ın dosyaları bozmaması için (boş dosya)
 
 Hepsini olduğu gibi, klasör yapısını bozmadan yükle.
@@ -18,7 +18,7 @@ Hepsini olduğu gibi, klasör yapısını bozmadan yükle.
      Public seç, "Create repository".
      ÖNEMLİ: Adı tam olarak böyle olmalı. Böylece adresin https://KULLANICIADIN.github.io olur.
   3. "uploading an existing file" bağlantısına tıkla. Zip'i aç, içindeki HER ŞEYİ
-     (index.html, manifest.json, sw.js, icons ve lib klasörleri) pencereye sürükle.
+     (index.html, manifest.json, sw.js, ve ikon PNG dosyaları — hepsi ana dizinde, klasör yok) pencereye sürükle.
      "Commit changes" de.
   4. .nojekyll dosyası yüklenmediyse (gizli dosya olabilir):
      "Add file" > "Create new file" > adı  .nojekyll  yaz > boş bırak > Commit.
