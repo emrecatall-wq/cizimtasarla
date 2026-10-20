@@ -5,7 +5,7 @@ PAKETİN İÇİNDEKİLER
   index.html     Uygulamanın kendisi (Giriş = Çizgi CAD, Tasarla = 3D Mobilya Studio)
   manifest.json  Uygulama adı, rengi, ikon bilgileri
   sw.js          İnternetsiz açılmayı sağlar
-  icons/         Uygulama ikonları
+  icon-*.png     Uygulama ikonları (ana dizinde)
   lib/           3D motoru, ikonlar, PDF kütüphanesi (hepsi pakette, internet gerekmez)
   .nojekyll      GitHub'ın dosyaları bozmaması için (boş dosya)
 
