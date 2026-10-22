@@ -1,14 +1,20 @@
 // Mobilya CAD servis çalışanı: uygulama internetsiz de açılır.
-// index.html önce internetten denenir (güncelleme gelsin), olmazsa kayıtlıdan açılır.
-// Kütüphane ve ikonlar kayıtlıdan gelir. Yeni dosya/kütüphane eklersen CACHE adını değiştir (v1 -> v2).
-const CACHE = 'mobilya-cad-v3';
+// Bütün .html sayfaları (index.html, cizgi-cad.html ...) önce internetten denenir (güncelleme gelsin),
+// internet yoksa kayıtlı kopyadan açılır. Her sayfa kendi adıyla kaydedilir.
+// Kütüphane ve ikonlar kayıtlıdan gelir. Yeni dosya/kütüphane eklersen CACHE adını değiştir (v4 -> v5).
+const CACHE = 'mobilya-cad-v4';
 const ASSETS = [
-  './', 'index.html', 'manifest.json',
+  './', 'index.html', 'cizgi-cad.html', 'manifest.json',
   'icon-192.png', 'icon-512.png', 'icon-maskable-512.png', 'apple-touch-icon.png',
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
+  e.waitUntil(
+    caches.open(CACHE)
+      // Bir dosya eksik olsa bile kurulum bozulmasın diye tek tek eklenir
+      .then(c => Promise.all(ASSETS.map(a => c.add(new Request(a, { cache: 'reload' })).catch(() => {}))))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener('activate', e => {
@@ -24,14 +30,16 @@ self.addEventListener('fetch', e => {
   const url = new URL(req.url);
   if (url.origin !== location.origin) return;
 
-  const isPage = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('index.html');
+  const p = url.pathname;
+  const isPage = req.mode === 'navigate' || p.endsWith('/') || p.endsWith('.html');
   if (isPage) {
+    // Sayfa adı: "/" ise index.html, değilse dosyanın kendi adı (cizgi-cad.html vb.)
+    const key = p.endsWith('/') ? 'index.html' : p.split('/').pop();
     e.respondWith(
-      fetch(req).then(res => {
-        const copy = res.clone();
-        caches.open(CACHE).then(c => c.put('index.html', copy));
+      fetch(url.href, { cache: 'no-cache' }).then(res => {
+        if (res && res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(key, copy)); }
         return res;
-      }).catch(() => caches.match('index.html').then(r => r || caches.match('./')))
+      }).catch(() => caches.match(key).then(r => r || caches.match('index.html')))
     );
     return;
   }
