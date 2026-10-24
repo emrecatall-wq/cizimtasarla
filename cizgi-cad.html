@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Çizgi CAD v16.7 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
+<title>Çizgi CAD v16.8 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1d1f">
 <meta name="mobile-web-app-capable" content="yes">
@@ -2121,28 +2121,47 @@ const HINGE_KEY = 'cizgi_hinge_v1';
 let hingeShow = false;
 try{ hingeShow = localStorage.getItem('cizgi_hinge_show') === '1'; }catch(e){}
 function loadHingeCfg(){
-  const def = { mode:'emre', edgeMm:100, secondMm:300, pairMinMm:1600, midMinMm:1200, clearMm:30, singleSide:'sol' };
+  const def = { mode:'ust', edgeMm:100, secondMm:300, pairMinMm:1600, midMinMm:1200, clearMm:30, singleSide:'sol' };
   try{ const d = JSON.parse(localStorage.getItem(HINGE_KEY)); if(d && typeof d==='object') Object.assign(def, d); }catch(e){}
   return def;
 }
 function saveHingeCfg(v){ try{ localStorage.setItem(HINGE_KEY, JSON.stringify(v)); }catch(e){} }
 // Kapak yüksekliğine göre menteşe merkezleri (kapağın ÜST kenarından mm)
-function hingeOffsets(doorH, hc){
+function hingeOffsets(doorH, hc, extra){
   const e = hc.edgeMm;
   let list = [];
-  if(hc.mode === 'esit'){
-    const n = doorH <= 900 ? 2 : doorH <= 1600 ? 3 : doorH <= 2000 ? 4 : 5;
+  if(hc.mode === 'ust'){
+    // Üstte ikili: kapak ağırlığı üst menteşeyi söker, alttaki ise tahtaya bastırır.
+    // 2 menteşe: uçlar | 3: uçlar + orta | 4+: üstten e ve ikinci, alttan e, kalanlar arada eşit
+    let n = doorH < hc.midMinMm ? 2 : doorH < hc.pairMinMm ? 3 : 4;
+    n += (extra || 0);
+    if(n === 2) list.push(e, doorH - e);
+    else if(n === 3) list.push(e, doorH/2, doorH - e);
+    else {
+      const a = Math.max(hc.secondMm, e + 70), bEnd = doorH - e;
+      list.push(e, a, bEnd);
+      const k = n - 3;
+      for(let i=1;i<=k;i++) list.push(a + (bEnd - a) * i/(k+1));
+    }
+  } else if(hc.mode === 'esit'){
+    const n = (doorH <= 900 ? 2 : doorH <= 1600 ? 3 : doorH <= 2000 ? 4 : 5) + (extra || 0);
     for(let i=0;i<n;i++) list.push(e + (doorH - 2*e) * i/(n-1));
   } else {
     list.push(e, doorH - e);
     if(doorH >= hc.pairMinMm && hc.secondMm > e) list.push(hc.secondMm, doorH - hc.secondMm);
     if(doorH >= hc.midMinMm) list.push(doorH/2);
+    if(extra) list.push(doorH/2 + (hc.secondMm > e ? (doorH/2 - hc.secondMm)/2 : doorH/4));
   }
   list = list.filter(v => v > 20 && v < doorH - 20).sort((a,b)=>a-b);
   const out = [];
   list.forEach(v => { if(!out.length || v - out[out.length-1] > 60) out.push(v); });
   return out;
 }
+// Dolap başına "Aynalı kapak": o dolabın kapaklarına +1 menteşe
+const MIRROR_KEY = 'cizgi_mirror_v1';
+function loadMirror(){ try{ return JSON.parse(localStorage.getItem(MIRROR_KEY)) || {}; }catch(e){ return {}; } }
+function saveMirror(v){ try{ localStorage.setItem(MIRROR_KEY, JSON.stringify(v)); }catch(e){} }
+function mirrorFor(info){ const d = loadMirror()[info.cab]; return !!(d && d.sig === modSig(info) && d.on); }
 // Bütün menteşeleri ve çakışmaları hesaplar
 function computeHinges(){
   const mdfShapes = shapes.filter(sh => sh.type === 'mdf' && sh.points && sh.points.length >= 2);
@@ -2173,7 +2192,7 @@ function computeHinges(){
         else if(plan.cols % 2 === 1 && c === plan.cols-1) side = 'R';
         else side = (c % 2 === 0) ? 'L' : 'R';
         const edgeX = side === 'L' ? info.minX + c*dW : info.minX + (c+1)*dW;
-        hingeOffsets(doorH, hc).forEach(off => {
+        hingeOffsets(doorH, hc, mirrorFor(info) ? 1 : 0).forEach(off => {
           const y = doorTop + off;
           let worst = null;
           horiz.forEach(b => {
@@ -2324,15 +2343,15 @@ function openHingeSettings(){
     opts.forEach(([v,t]) => { const o=document.createElement('option'); o.value=v; o.textContent=t; if(v===val) o.selected=true; sel.appendChild(o); });
     row.append(lb, sel); m.body.appendChild(row); return sel;
   };
-  const sMode = mkSel('Yerleşim', [['emre','Uçlar + ikinci + orta'],['esit','Eşit aralıklı']], hc.mode);
+  const sMode = mkSel('Yerleşim', [['ust','Üstte ikili (önerilen)'],['emre','Üstte ve altta ikili + orta'],['esit','Eşit aralıklı']], hc.mode);
   const iEdge = mk('Kapak kenarından ilk menteşe merkezi', fmtLenPlain(hc.edgeMm), 'cm');
-  const iSec = mk('İkinci menteşe merkezi (kenardan)', fmtLenPlain(hc.secondMm), 'cm');
-  const iPair = mk('İkinci menteşe şu boydan itibaren', fmtLenPlain(hc.pairMinMm), 'cm');
-  const iMid = mk('Orta menteşe şu boydan itibaren', fmtLenPlain(hc.midMinMm), 'cm');
+  const iSec = mk('Üstteki ikinci menteşe merkezi (üstten)', fmtLenPlain(hc.secondMm), 'cm');
+  const iPair = mk('4 menteşe şu kapak boyundan itibaren', fmtLenPlain(hc.pairMinMm), 'cm');
+  const iMid = mk('3 menteşe şu kapak boyundan itibaren', fmtLenPlain(hc.midMinMm), 'cm');
   const iClr = mk('Raf yüzü ile menteşe merkezi arası en az', fmtLenPlain(hc.clearMm), 'cm');
   const sSide = mkSel('Tek kapakta menteşe tarafı', [['sol','Sol'],['sag','Sağ']], hc.singleSide);
   const n = document.createElement('div'); n.style.cssText='font-size:11px;color:#9aa0a6;';
-  n.textContent = 'Varsayılan: 120 cm\'e kadar kapakta 2 menteşe (10 cm + 10 cm), 120-160 cm arası 3, 160 cm üstü 5. "Eşit aralıklı" modda adet kapak boyuna göre: 90 cm\'e kadar 2, 160 cm\'e kadar 3, 200 cm\'e kadar 4, üstü 5. Kenar mesafesi yine üstteki ilk değerdir.';
+  n.textContent = 'Üstte ikili (varsayılan): 120 cm\'e kadar 2 menteşe, 120-160 cm 3 (uçlar + orta), 160 cm üstü 4: üstten 10 ve 30 cm, alttan 10 cm, biri arada. Aynalı işaretli dolapta her kapağa +1 menteşe (2 m kapakta 5). Aynalı ayarı: Kesim Listesi önizlemesinde dolap satırında.';
   m.body.appendChild(n);
   m.foot.append(
     csvBtn('Varsayılan', ()=>{ saveHingeCfg({}); try{ localStorage.removeItem(HINGE_KEY); }catch(e){} m.close(); render(); showToast('Menteşe ayarı varsayılana döndü'); }),
@@ -2815,7 +2834,13 @@ function openCsvPreview(depthMm){
             if(n > 0) all[info.cab] = { sig: modSig(info), n }; else delete all[info.cab];
             saveDrawers(all); iDrw.value = n; refresh(true);
           });
-          ctl.append(lab('Derinlik (cm)', iDep), lab('Kapak yok', cNone), lab('Yan yana kapak', iCols), lab('Altlı üstlü', cSplit), lab('Dış çekmece (adet)', iDrw));
+          const cMir = document.createElement('input'); cMir.type='checkbox'; cMir.checked=mirrorFor(info); cMir.style.cssText='width:20px;height:20px;';
+          cMir.addEventListener('change', ()=>{
+            const all = loadMirror();
+            if(cMir.checked) all[info.cab] = { sig: modSig(info), on: true }; else delete all[info.cab];
+            saveMirror(all); refresh(true); try{ render(); }catch(e){}
+          });
+          ctl.append(lab('Derinlik (cm)', iDep), lab('Kapak yok', cNone), lab('Yan yana kapak', iCols), lab('Altlı üstlü', cSplit), lab('Dış çekmece (adet)', iDrw), lab('Aynalı kapak (+1 menteşe)', cMir));
           splitRow.append(lab('Alt kapak (cm)', iLow), lab('Üst kapak (cm)', iUp), midBtn, splitInfo);
           row.append(head, ctl, splitRow); box.appendChild(row);
         });
