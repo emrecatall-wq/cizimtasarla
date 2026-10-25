@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Çizgi CAD v16.9 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
+<title>Çizgi CAD v16.10 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1d1f">
 <meta name="mobile-web-app-capable" content="yes">
@@ -2386,20 +2386,23 @@ setTimeout(()=>{ try{ hingePrevBad = hingeBadMap(); }catch(e){ hingePrevBad = ne
 // Sadece hesap ve gösterim: çizime ve Excel listesine dokunmaz.
 const LIB_KEY = 'cizgi_lib_v1';
 const LIB_CATS = [
-  ['mentese', 'Menteşe'], ['baglanti', 'Bağlantı parçası'], ['kulp', 'Kulp'], ['ayak', 'Ayak']
+  ['mentese', 'Menteşe'], ['baglanti', 'Bağlantı parçası'], ['kulp', 'Kulp'], ['ayak', 'Ayak'], ['vida', 'Vida']
 ];
 function libDefaults(){
   return {
-    mdfKgM2: 13.3, plakaFiyat: 0, plakaEn: 2100, plakaBoy: 2800,
-    arkKgM2: 5.9, arkFiyatM2: 0,
+    ver: 2,
+    mdfKgM2: 13.5, plakaFiyat: 0, plakaEn: 2100, plakaBoy: 2800,
+    arkKgM2: 3.75, arkFiyatM2: 0,
     aynaKgM2: 10, aynaFiyatM2: 0,
     ayakAdet: 4, ayakGenisAdet: 6, ayakGenisMm: 1000,
     sabitRaf: false,
+    vidaMentese: 4, vidaBaglanti: 4, vidaKulp: 2, vidaAyak: 4, arkVidaAralik: 150,
     items: [
       { id:'m1', cat:'mentese',  name:'Menteşe (35 mm kase, frenli)',      size:'35 mm kase',                g:110, price:0, use:true },
       { id:'b1', cat:'baglanti', name:'Şeffaf plastik bağlantı (2 parça)', size:'delik arası 27 mm, taban 3 mm', g:12,  price:0, use:true },
       { id:'k1', cat:'kulp',     name:'Kulp',                              size:'128 mm',                    g:100, price:0, use:true },
       { id:'a1', cat:'ayak',     name:'Ayarlı plastik ayak',               size:'10 cm',                     g:80,  price:0, use:true },
+      { id:'v1', cat:'vida',     name:'Sunta vidası',                      size:'3,5 × 16 mm',               g:1.5, price:0, use:true },
     ]
   };
 }
@@ -2408,8 +2411,17 @@ function loadLib(){
   try{
     const s = JSON.parse(localStorage.getItem(LIB_KEY));
     if(s && typeof s === 'object'){
-      Object.keys(d).forEach(k => { if(k !== 'items' && s[k] !== undefined) d[k] = s[k]; });
+      Object.keys(d).forEach(k => { if(k !== 'items' && k !== 'ver' && s[k] !== undefined) d[k] = s[k]; });
       if(Array.isArray(s.items) && s.items.length) d.items = s.items;
+      if(!s.ver){
+        // eski varsayılanlar hiç değiştirilmediyse yenileriyle değiştir (18 mm = 13,5 · arkalık 5 mm = 3,75)
+        if(s.mdfKgM2 === 13.3) d.mdfKgM2 = 13.5;
+        if(s.arkKgM2 === 5.9) d.arkKgM2 = 3.75;
+      }
+      // eski kayıtta vida yoksa ekle
+      LIB_CATS.forEach(([cat]) => {
+        if(!d.items.some(i => i.cat === cat)){ const def = libDefaults().items.find(i => i.cat === cat); if(def) d.items.push(def); }
+      });
     }
   }catch(e){}
   return d;
@@ -2458,8 +2470,10 @@ function computeBom(mdfShapes, depthMmDef){
     const hinges = hs.filter(h => h.cab === info.cab).length;
     const kulp = doors + drawers;
     const ayak = lib.ayakAdet > 0 ? (info.W > lib.ayakGenisMm ? lib.ayakGenisAdet : lib.ayakAdet) : 0;
-    const it = { mentese:libActive(lib,'mentese'), baglanti:libActive(lib,'baglanti'), kulp:libActive(lib,'kulp'), ayak:libActive(lib,'ayak') };
-    const cnt = { mentese:hinges, baglanti:conn, kulp, ayak };
+    const backVida = (backM2 > 0 && lib.arkVidaAralik > 0) ? Math.ceil(2 * (info.W + info.H) / lib.arkVidaAralik) : 0;
+    const vida = Math.round(hinges * lib.vidaMentese + conn * lib.vidaBaglanti + kulp * lib.vidaKulp + ayak * lib.vidaAyak + backVida);
+    const it = { mentese:libActive(lib,'mentese'), baglanti:libActive(lib,'baglanti'), kulp:libActive(lib,'kulp'), ayak:libActive(lib,'ayak'), vida:libActive(lib,'vida') };
+    const cnt = { mentese:hinges, baglanti:conn, kulp, ayak, vida };
     let hwKg = 0, hwCost = 0;
     Object.keys(cnt).forEach(k => { hwKg += cnt[k] * (+it[k].g || 0) / 1000; hwCost += cnt[k] * (+it[k].price || 0); });
     const kg = {
@@ -2473,13 +2487,13 @@ function computeBom(mdfShapes, depthMmDef){
       back: backM2 * lib.arkFiyatM2, mirror: mirrorM2 * lib.aynaFiyatM2, hw: hwCost
     };
     cost.total = cost.mdf + cost.back + cost.mirror + cost.hw;
-    return { cab:info.cab, W:info.W, H:info.H, D, doors, drawers, hinges, kulp, conn, ayak, mirror,
+    return { cab:info.cab, W:info.W, H:info.H, D, doors, drawers, hinges, kulp, conn, ayak, vida, mirror,
              m2:{ body:bodyM2, door:doorM2, back:backM2, mirror:mirrorM2 }, kg, cost };
   });
   const sum = f => per.reduce((a,x)=>a+f(x), 0);
   const tot = {
     doors:sum(x=>x.doors), drawers:sum(x=>x.drawers), hinges:sum(x=>x.hinges), kulp:sum(x=>x.kulp),
-    conn:sum(x=>x.conn), ayak:sum(x=>x.ayak), kg:sum(x=>x.kg.total), cost:sum(x=>x.cost.total),
+    conn:sum(x=>x.conn), ayak:sum(x=>x.ayak), vida:sum(x=>x.vida), kg:sum(x=>x.kg.total), cost:sum(x=>x.cost.total),
     mdfM2:sum(x=>x.m2.body + x.m2.door), backM2:sum(x=>x.m2.back), mirrorM2:sum(x=>x.m2.mirror)
   };
   const plakaM2 = (lib.plakaEn * lib.plakaBoy) / 1e6 || 5.88;
@@ -2495,7 +2509,7 @@ function bomText(b){
   const lib = b.lib;
   b.per.forEach(x => {
     L.push('Dolap ' + x.cab + ' (' + fmtLenPlain(x.W) + ' × ' + fmtLenPlain(x.H) + ' × ' + fmtLenPlain(x.D) + ' cm): ' + fmtKg(x.kg.total) +
-      ' — ' + x.hinges + ' menteşe, ' + x.conn + ' bağlantı, ' + x.kulp + ' kulp, ' + x.ayak + ' ayak' + (x.mirror ? ', aynalı' : ''));
+      ' — ' + x.hinges + ' menteşe, ' + x.conn + ' bağlantı, ' + x.kulp + ' kulp, ' + x.ayak + ' ayak, ' + x.vida + ' vida' + (x.mirror ? ', aynalı' : ''));
   });
   L.push('');
   L.push('TOPLAM AĞIRLIK: ' + fmtKg(b.tot.kg));
@@ -2503,6 +2517,7 @@ function bomText(b){
   L.push('Bağlantı: ' + b.tot.conn + ' adet (' + libActive(lib,'baglanti').name + ')');
   L.push('Kulp: ' + b.tot.kulp + ' adet (' + libActive(lib,'kulp').name + ')');
   L.push('Ayak: ' + b.tot.ayak + ' adet (' + libActive(lib,'ayak').name + ')');
+  L.push('Vida: ~' + b.tot.vida + ' adet (' + libActive(lib,'vida').name + (libActive(lib,'vida').size ? ' ' + libActive(lib,'vida').size : '') + ')');
   L.push('MDF: ' + fmtM2(b.tot.mdfM2) + ' (≈ ' + (Math.round(b.tot.plaka*10)/10).toFixed(1).replace('.', ',') + ' plaka, fire hariç)');
   if(b.tot.backM2) L.push('Arkalık: ' + fmtM2(b.tot.backM2));
   if(b.tot.mirrorM2) L.push('Ayna: ' + fmtM2(b.tot.mirrorM2));
@@ -2534,7 +2549,7 @@ function openBomSummary(){
       ['Arkalık', fmtM2(x.m2.back), fmtKg(x.kg.back)],
     ];
     if(x.mirror) rows.push(['Ayna', fmtM2(x.m2.mirror), fmtKg(x.kg.mirror)]);
-    rows.push(['Hırdavat', x.hinges + ' menteşe · ' + x.conn + ' bağlantı · ' + x.kulp + ' kulp · ' + x.ayak + ' ayak', fmtKg(x.kg.hw)]);
+    rows.push(['Hırdavat', x.hinges + ' menteşe · ' + x.conn + ' bağlantı · ' + x.kulp + ' kulp · ' + x.ayak + ' ayak · ~' + x.vida + ' vida', fmtKg(x.kg.hw)]);
     if(b.hasPrice) rows.push(['Maliyet', '', fmtTL(x.cost.total)]);
     rows.forEach(r => {
       const d = document.createElement('div'); d.style.cssText = 'display:flex;gap:8px;padding:2px 0;color:#cfd3d8;';
@@ -2581,7 +2596,7 @@ function openLibrary(onDone){
   num('MDF plaka fiyatı', 'plakaFiyat', 'TL');
   num('Plaka eni', 'plakaEn', 'mm');
   num('Plaka boyu', 'plakaBoy', 'mm');
-  num('Arkalık ağırlığı (8 mm MDF ≈ 5,9 · 3 mm duralit ≈ 2,6)', 'arkKgM2', 'kg/m²');
+  num('Arkalık ağırlığı (5 mm MDF ≈ 3,75 · 8 mm ≈ 6 · 3 mm duralit ≈ 2,6)', 'arkKgM2', 'kg/m²');
   num('Arkalık fiyatı', 'arkFiyatM2', 'TL/m²');
   num('Ayna ağırlığı (4 mm ≈ 10)', 'aynaKgM2', 'kg/m²');
   num('Ayna fiyatı', 'aynaFiyatM2', 'TL/m²');
@@ -2595,6 +2610,12 @@ function openLibrary(onDone){
   sr.append(srCb, document.createTextNode('Raflar sabit (bağlantı parçası ile) — işaretsizse raf pimi sayılır'));
   m.body.appendChild(sr);
 
+  sec('Vida sayımı (parça başına)');
+  num('Menteşe başına vida (kase + taban)', 'vidaMentese', 'adet');
+  num('Bağlantı parçası başına vida', 'vidaBaglanti', 'adet');
+  num('Kulp başına vida', 'vidaKulp', 'adet');
+  num('Ayak başına vida', 'vidaAyak', 'adet');
+  num('Arkalık vida aralığı (çevre boyunca, 0 = yok)', 'arkVidaAralik', 'mm');
   sec('Ürünler (her grupta "Kullan" işaretli olan hesaba girer)');
   const listEl = document.createElement('div'); m.body.appendChild(listEl);
   const drawItems = () => {
@@ -3129,14 +3150,14 @@ function openCsvPreview(depthMm){
         const hb = document.createElement('div');
         hb.style.cssText = 'border:1px solid #50c878;border-radius:8px;padding:8px;margin-bottom:8px;font-size:13px;';
         const ht = document.createElement('div'); ht.style.cssText = 'font-weight:700;color:#50c878;margin-bottom:4px;';
-        ht.textContent = '🔩 ' + bm.tot.hinges + ' menteşe · ' + bm.tot.conn + ' bağlantı · ' + bm.tot.kulp + ' kulp · ' + bm.tot.ayak + ' ayak  ·  ⚖️ ' + fmtKg(bm.tot.kg) + (bm.hasPrice ? '  ·  ' + fmtTL(bm.tot.cost) : '');
+        ht.textContent = '🔩 ' + bm.tot.hinges + ' menteşe · ' + bm.tot.conn + ' bağlantı · ' + bm.tot.kulp + ' kulp · ' + bm.tot.ayak + ' ayak · ~' + bm.tot.vida + ' vida  ·  ⚖️ ' + fmtKg(bm.tot.kg) + (bm.hasPrice ? '  ·  ' + fmtTL(bm.tot.cost) : '');
         hb.appendChild(ht);
         const sub = document.createElement('div'); sub.style.cssText = 'color:#cfd3d8;padding:1px 0;';
         sub.textContent = bm.tot.doors + ' kapak · ' + bm.tot.drawers + ' çekmece · MDF ' + fmtM2(bm.tot.mdfM2) + ' (≈ ' + (Math.round(bm.tot.plaka*10)/10).toFixed(1).replace('.', ',') + ' plaka)';
         hb.appendChild(sub);
         if(bm.per.length > 1) bm.per.forEach(x => {
           const d = document.createElement('div'); d.style.cssText = 'color:#cfd3d8;padding:1px 0;';
-          d.textContent = 'Dolap ' + x.cab + ': ' + fmtKg(x.kg.total) + ' — ' + x.hinges + ' menteşe, ' + x.conn + ' bağlantı, ' + x.doors + ' kapak, ' + x.drawers + ' çekmece, ' + x.kulp + ' kulp, ' + x.ayak + ' ayak';
+          d.textContent = 'Dolap ' + x.cab + ': ' + fmtKg(x.kg.total) + ' — ' + x.hinges + ' menteşe, ' + x.conn + ' bağlantı, ' + x.doors + ' kapak, ' + x.drawers + ' çekmece, ' + x.kulp + ' kulp, ' + x.ayak + ' ayak, ~' + x.vida + ' vida';
           hb.appendChild(d);
         });
         const hn = document.createElement('div'); hn.style.cssText = 'font-size:11px;color:#9aa0a6;margin-top:3px;';
