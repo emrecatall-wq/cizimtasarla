@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Çizgi CAD v16.10 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
+<title>Çizgi CAD v16.11 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1d1f">
 <meta name="mobile-web-app-capable" content="yes">
@@ -1898,7 +1898,7 @@ document.getElementById('grpFile').addEventListener('click', function(){
       pushHistory();
       shapes=[]; drawing=null; selectedShapes=new Set(); offX=40; offY=40; scale=3; autosave(); render();
     }},
-    {icon:'📄', label:'PDF dışa aktar', onClick:exportPdf},
+    {icon:'📄', label:'PDF dışa aktar (alan seç)', onClick:startPdfWindow},
     {icon:'🚀', label:"Tasarla'ya Gönder", onClick:sendToTasarla},
   ]);
 });
@@ -3312,6 +3312,263 @@ function exportPdf(){
     }
   }
   doc.save('cizgi-cad-'+new Date().toISOString().slice(0,10)+'.pdf');
+}
+
+// ================= PDF: PENCERE SEÇ ve KAĞIDA SIĞDIR (AutoCAD "Pencere" gibi) =================
+// Ekranda dikdörtgen seçilir; seçilen alan beyaz zemin üzerine, kenarlardan boşluk bırakılarak
+// A4 veya A5 sayfaya orantılı sığdırılır. Ekranda ne görünüyorsa (ölçüler, etiketler) o basılır.
+const PDF_OPT_KEY = 'cizgi_pdf_opts_v1';
+const PAPERS = { a4:[210,297], a5:[148,210] };
+function loadPdfOpts(){
+  const d = { paper:'a4', orient:'auto', margin:15, mono:true, photo:false, title:'' };
+  try{ const s = JSON.parse(localStorage.getItem(PDF_OPT_KEY)); if(s && typeof s === 'object') Object.assign(d, s); }catch(e){}
+  return d;
+}
+function savePdfOpts(o){ try{ localStorage.setItem(PDF_OPT_KEY, JSON.stringify(o)); }catch(e){} }
+
+// Bütün çizimin sınırları (MDF köşeleri ve ölçü çizgileri dahil)
+function drawingExtents(){
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  const add = p => { if(!p) return; minX=Math.min(minX,p.x); minY=Math.min(minY,p.y); maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y); };
+  for(const s of shapes){
+    if(!s.points) continue;
+    if(lineOnly && s.type === 'mdf') continue;
+    s.points.forEach(add);
+    try{
+      if(s.type === 'mdf' && s.points.length >= 2) getMdfCorners(s.points[0], s.points[1], s.rawCursor).forEach(add);
+      if(s.type === 'dim' && s.points.length >= 2){ const g = dimGeometry(s.points[0], s.points[1], s.offset); [g.dimP0, g.dimP1].forEach(add); }
+    }catch(e){}
+  }
+  if(!isFinite(minX)) return null;
+  const pad = Math.max(maxX-minX, maxY-minY) * 0.06 + 40;   // etiketler kenarda kesilmesin
+  return { minX:minX-pad, minY:minY-pad, maxX:maxX+pad, maxY:maxY+pad };
+}
+
+// Kağıt düzeni: yön, ölçek (kağıt mm / çizim mm), resim boyutu
+function pdfLayout(sel, o){
+  const [pw0, ph0] = PAPERS[o.paper] || PAPERS.a4;
+  const sw = Math.max(1, sel.maxX - sel.minX), sh = Math.max(1, sel.maxY - sel.minY);
+  const fit = (pw, ph) => Math.min((pw - 2*o.margin) / sw, (ph - 2*o.margin) / sh);
+  let land;
+  if(o.orient === 'yatay') land = true;
+  else if(o.orient === 'dikey') land = false;
+  else land = fit(ph0, pw0) > fit(pw0, ph0);
+  const pw = land ? ph0 : pw0, ph = land ? pw0 : ph0;
+  const s = fit(pw, ph);
+  return { land, pw, ph, s, imgW: sw*s, imgH: sh*s, x: (pw - sw*s)/2, y: (ph - sh*s)/2, ratio: 1/s };
+}
+
+let pdfSelUI = null;
+// PDF kütüphanesi yoksa (cizgi-cad.html tek başına açılıp lib klasörü bulunmazsa) internetten yükle
+function ensureJsPdf(){
+  return new Promise((res, rej) => {
+    if(window.jspdf && window.jspdf.jsPDF) return res();
+    const urls = ['https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js', 'https://unpkg.com/jspdf@2.5.1/dist/jspdf.umd.min.js'];
+    const tryNext = i => {
+      if(i >= urls.length) return rej(new Error('yok'));
+      const sc = document.createElement('script'); sc.src = urls[i];
+      sc.onload = () => (window.jspdf && window.jspdf.jsPDF) ? res() : tryNext(i+1);
+      sc.onerror = () => tryNext(i+1);
+      document.head.appendChild(sc);
+    };
+    tryNext(0);
+  });
+}
+function startPdfWindow(){
+  if(!shapes.length){ showToast('Çizim boş'); return; }
+  if(!window.jspdf || !window.jspdf.jsPDF){
+    showToast('PDF kütüphanesi yükleniyor…', 3000);
+    ensureJsPdf().then(()=>startPdfWindow(), ()=>showToast('PDF kütüphanesi yüklenemedi: internet bağlantısını kontrol et', 5000));
+    return;
+  }
+  if(pdfSelUI) pdfSelUI.remove();
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:absolute;inset:0;z-index:60;touch-action:none;cursor:crosshair;background:rgba(0,0,0,0.15);';
+  const bar = document.createElement('div');
+  bar.style.cssText = 'position:absolute;top:8px;left:50%;transform:translateX(-50%);display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:center;max-width:96%;background:rgba(16,18,20,0.95);border:1px solid #ffb454;border-radius:10px;padding:7px 10px;color:#e8e8e8;font:600 13px -apple-system,sans-serif;';
+  const msg = document.createElement('span'); msg.textContent = '📄 Yazdırılacak alanı seç: köşeden köşeye sürükle';
+  const bAll = csvBtn('Tüm Çizim', ()=>{ const e = drawingExtents(); if(e){ close(); openPdfOptions(e); } });
+  const bNo = csvBtn('İptal', ()=>close());
+  [bAll, bNo].forEach(b => { b.style.padding = '6px 10px'; b.style.fontSize = '13px'; });
+  bar.append(msg, bAll, bNo);
+  const box = document.createElement('div');
+  box.style.cssText = 'position:absolute;border:2px dashed #ffb454;background:rgba(255,180,84,0.12);display:none;pointer-events:none;';
+  ov.append(box, bar);
+  wrap.appendChild(ov);
+  pdfSelUI = ov;
+  let start = null;
+  const pos = e => { const r = wrap.getBoundingClientRect(); return { x:e.clientX - r.left, y:e.clientY - r.top }; };
+  // dokunuşlar alttaki çizim aracına geçmesin
+  ['pointerdown','pointermove','pointerup','pointercancel','wheel','touchstart','touchmove'].forEach(t => ov.addEventListener(t, ev => ev.stopPropagation(), {passive:false}));
+  ov.addEventListener('pointerdown', e => {
+    if(bar.contains(e.target)) return;
+    e.preventDefault(); start = pos(e);
+    try{ ov.setPointerCapture(e.pointerId); }catch(_){}
+    box.style.display = 'block'; Object.assign(box.style, { left:start.x+'px', top:start.y+'px', width:'0px', height:'0px' });
+  });
+  ov.addEventListener('pointermove', e => {
+    if(!start) return;
+    const p = pos(e);
+    Object.assign(box.style, { left:Math.min(p.x,start.x)+'px', top:Math.min(p.y,start.y)+'px', width:Math.abs(p.x-start.x)+'px', height:Math.abs(p.y-start.y)+'px' });
+  });
+  ov.addEventListener('pointerup', e => {
+    if(!start) return;
+    const p = pos(e), s0 = start; start = null;
+    if(Math.abs(p.x-s0.x) < 15 || Math.abs(p.y-s0.y) < 15){ box.style.display = 'none'; showToast('Daha büyük bir alan seç'); return; }
+    const a = screenToWorld({x:Math.min(p.x,s0.x), y:Math.min(p.y,s0.y)});
+    const b = screenToWorld({x:Math.max(p.x,s0.x), y:Math.max(p.y,s0.y)});
+    close();
+    openPdfOptions({ minX:a.x, minY:a.y, maxX:b.x, maxY:b.y });
+  });
+  function close(){ ov.remove(); if(pdfSelUI === ov) pdfSelUI = null; }
+}
+
+function openPdfOptions(sel){
+  const o = loadPdfOpts();
+  const m = csvModalBase('PDF Çıktı Ayarları');
+  const row = (label, el) => { const r = document.createElement('div'); r.style.cssText='display:flex;align-items:center;gap:8px;margin-bottom:8px;'; const l=document.createElement('div'); l.style.cssText='flex:1;'; l.textContent=label; r.append(l, el); m.body.appendChild(r); return el; };
+  const selCss = 'padding:7px 8px;border-radius:6px;border:1px solid #3a3d42;background:#121316;color:#e8e8e8;font-size:14px;';
+  const mkSel = (opts, val) => { const s=document.createElement('select'); s.style.cssText=selCss; opts.forEach(([v,t])=>{ const op=document.createElement('option'); op.value=v; op.textContent=t; if(v===val) op.selected=true; s.appendChild(op); }); return s; };
+  const sPaper = row('Kağıt', mkSel([['a4','A4 (21 × 29,7 cm)'],['a5','A5 (14,8 × 21 cm)']], o.paper));
+  const sOr = row('Yön', mkSel([['auto','Otomatik (en büyük olan)'],['dikey','Dikey'],['yatay','Yatay']], o.orient));
+  const iMar = document.createElement('input'); iMar.type='text'; iMar.inputMode='decimal'; iMar.value=String(o.margin/10).replace('.',','); iMar.style.cssText=selCss+'width:70px;text-align:right;';
+  row('Kenar boşluğu (cm)', iMar);
+  const sCol = row('Renk', mkSel([['mono','Siyah-beyaz (yazıcı için)'],['renk','Renkli']], o.mono ? 'mono' : 'renk'));
+  const iTitle = document.createElement('input'); iTitle.type='text'; iTitle.value=o.title||''; iTitle.placeholder='örn. Ahmet Bey — Gardırop'; iTitle.style.cssText=selCss+'width:190px;';
+  row('Başlık (isteğe bağlı)', iTitle);
+  let cPhoto = null;
+  if(bgPhoto && bgPhoto.img){ cPhoto = document.createElement('input'); cPhoto.type='checkbox'; cPhoto.checked=!!o.photo; cPhoto.style.cssText='width:20px;height:20px;'; row('Arka plan fotoğrafını da bas', cPhoto); }
+  const info = document.createElement('div'); info.style.cssText='font-size:13px;color:#50c878;font-weight:600;margin-top:4px;';
+  const note = document.createElement('div'); note.style.cssText='font-size:11px;color:#9aa0a6;margin-top:6px;';
+  note.textContent = 'Ekranda ne görünüyorsa o basılır: "Ölçü Gizle" açıksa ölçüler, "Sadece Çizgi" açıksa MDF parçaları çıkmaz. Yazdırırken "Gerçek boyut / %100" seçersen ölçek doğru olur.';
+  m.body.append(info, note);
+  const cur = () => {
+    const mm = numIn(iMar.value);
+    return { paper:sPaper.value, orient:sOr.value, margin: (isNaN(mm) || mm < 0) ? 15 : Math.min(60, mm*10), mono: sCol.value === 'mono', photo: cPhoto ? cPhoto.checked : false, title: iTitle.value.trim() };
+  };
+  const upd = () => {
+    const c = cur(), L = pdfLayout(sel, c);
+    const r = L.ratio >= 10 ? Math.round(L.ratio) : Math.round(L.ratio*10)/10;
+    info.textContent = 'Seçilen alan ' + fmtLenPlain(sel.maxX-sel.minX) + ' × ' + fmtLenPlain(sel.maxY-sel.minY) + ' cm → ' + (L.land ? 'yatay' : 'dikey') + ' ' + c.paper.toUpperCase() + ', ölçek ≈ 1:' + String(r).replace('.',',');
+  };
+  [sPaper, sOr, sCol].forEach(e => e.addEventListener('change', upd)); iMar.addEventListener('input', upd);
+  upd();
+  m.foot.append(
+    csvBtn('Yeniden Seç', ()=>{ m.close(); startPdfWindow(); }),
+    csvBtn('İptal', ()=>m.close()),
+    csvBtn('PDF Oluştur', ()=>{
+      const c = cur(); savePdfOpts(c); m.close();
+      showToast('PDF hazırlanıyor…', 4000);
+      setTimeout(()=>{ try{ buildWindowPdf(sel, c); }catch(err){ console.error(err); showToast('PDF oluşturulamadı: ' + (err && err.message || err), 5000); } }, 30);
+    }, true)
+  );
+}
+
+// Seçilen alanı yüksek çözünürlükte ana tuvale çizip görüntüyü alır, sonra ekranı geri yükler
+function renderWindowImage(sel, L, opt){
+  const VP = 4;                       // 1 kağıt mm = 4 çizim pikseli (yazı/çizgi kalınlıkları ekrandaki gibi kalsın)
+  const K = 3;                        // gerçek çözünürlük çarpanı (≈ 300 dpi)
+  let wv = L.imgW * VP, hv = L.imgH * VP;
+  let k = K;
+  const MAXPX = 4096;                 // telefon tarayıcıları için güvenli tuval sınırı
+  if(Math.max(wv, hv) * k > MAXPX) k = MAXPX / Math.max(wv, hv);
+  const save = { scale, offX, offY, sel: new Set(selectedShapes) };
+  selectedShapes.clear();
+  let url;
+  try{
+    cv.width = Math.round(wv * k); cv.height = Math.round(hv * k);
+    ctx.setTransform(k,0,0,k,0,0);
+    ctx.clearRect(0,0,wv,hv);
+    scale = L.s * VP; offX = -sel.minX * scale; offY = -sel.minY * scale;
+    // 1) fotoğraf (isteğe bağlı) ayrı katman: renkleri ters çevrilmez
+    let P = null;
+    if(opt.photo){ drawBgPhoto(); P = ctx.getImageData(0,0,cv.width,cv.height).data; ctx.clearRect(0,0,wv,hv); }
+    // 2) çizim katmanı
+    for(const s of shapes) drawShape(s, false);
+    try{ if(typeof drawHinges === 'function') drawHinges(); }catch(e){}
+    // beyaz zemin: ekrandaki açık renkli çizgi/yazı koyu olur, koyu etiket kutuları beyaz olur
+    const img = ctx.getImageData(0,0,cv.width,cv.height), d = img.data;
+    for(let i=0;i<d.length;i+=4){
+      const a = d[i+3] / 255;
+      let br = 255, bg = 255, bb = 255;
+      if(P && P[i+3]){ const pa = P[i+3]/255; br = P[i]*pa + 255*(1-pa); bg = P[i+1]*pa + 255*(1-pa); bb = P[i+2]*pa + 255*(1-pa); }
+      let r = (255 - d[i])*a + br*(1-a), g = (255 - d[i+1])*a + bg*(1-a), b = (255 - d[i+2])*a + bb*(1-a);
+      if(opt.mono){ const Y = 0.299*r + 0.587*g + 0.114*b; r = g = b = Y; }
+      d[i] = r; d[i+1] = g; d[i+2] = b; d[i+3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    url = cv.toDataURL('image/jpeg', 0.95);
+  } finally {
+    scale = save.scale; offX = save.offX; offY = save.offY;
+    save.sel.forEach(id => selectedShapes.add(id));
+    resizeCanvas();   // ekran tuvalini eski haline getirir ve yeniden çizer
+  }
+  return url;
+}
+// Türkçe harfler PDF'te bozulmasın diye yazılar da resim olarak eklenir
+function textImage(txt, px, bold){
+  const c = document.createElement('canvas'), g = c.getContext('2d');
+  const f = (bold ? '700 ' : '400 ') + px + 'px -apple-system, "Segoe UI", Roboto, Arial, sans-serif';
+  g.font = f; const w = Math.ceil(g.measureText(txt).width) + 4;
+  c.width = w; c.height = Math.ceil(px * 1.35);
+  g.fillStyle = '#fff'; g.fillRect(0,0,c.width,c.height);
+  g.font = f; g.fillStyle = '#000'; g.textBaseline = 'middle'; g.fillText(txt, 2, c.height/2);
+  return { url: c.toDataURL('image/png'), w: c.width, h: c.height };
+}
+function buildWindowPdf(sel, opt){
+  const L = pdfLayout(sel, opt);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'mm', format: opt.paper, orientation: L.land ? 'landscape' : 'portrait' });
+  const url = renderWindowImage(sel, L, opt);
+  doc.addImage(url, 'JPEG', L.x, L.y, L.imgW, L.imgH);
+  const r = L.ratio >= 10 ? Math.round(L.ratio) : Math.round(L.ratio*10)/10;
+  const d = new Date(), ds = String(d.getDate()).padStart(2,'0') + '.' + String(d.getMonth()+1).padStart(2,'0') + '.' + d.getFullYear();
+  const foot = textImage('Çizgi CAD · ' + ds + ' · Ölçek ≈ 1:' + String(r).replace('.',',') + ' (' + opt.paper.toUpperCase() + ', %100 yazdırıldığında) · ölçüler cm', 40, false);
+  const fh = Math.min(4, opt.margin * 0.4);
+  if(fh >= 2) doc.addImage(foot.url, 'PNG', opt.margin, L.ph - opt.margin/2 - fh/2, foot.w * fh / foot.h, fh);
+  if(opt.title){
+    const t = textImage(opt.title, 60, true), th = Math.min(6, opt.margin * 0.5);
+    if(th >= 2.5) doc.addImage(t.url, 'PNG', opt.margin, opt.margin/2 - th/2, t.w * th / t.h, th);
+  }
+  const name = (opt.title ? opt.title.replace(/[\\/:*?"<>|]+/g,'').slice(0,40) + ' ' : 'cizgi-cad ') + d.toISOString().slice(0,10) + '.pdf';
+  const blob = doc.output('blob');
+  showPdfReady(blob, name, url, L);
+}
+
+// ---- Dosyayı kullanıcıya verme (telefon / APK / bilgisayar) ----
+function downloadBlobLocal(blob, name){
+  const u = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = u; a.download = name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(u), 60000);
+}
+// Ana uygulamanın (index.html) içindeysek indirmeyi ana sayfaya yaptırır; o cevap vermezse burada indirir
+function deliverDownload(blob, name){
+  if(window.parent && window.parent !== window){
+    let done = false;
+    const onAck = e => { if(e.data && e.data.type === 'cizgi-save-ack' && e.data.name === name){ done = true; window.removeEventListener('message', onAck); } };
+    window.addEventListener('message', onAck);
+    try{ window.parent.postMessage({ type:'cizgi-save-file', name, blob }, '*'); }catch(e){}
+    setTimeout(()=>{ window.removeEventListener('message', onAck); if(!done) downloadBlobLocal(blob, name); }, 900);
+  } else downloadBlobLocal(blob, name);
+}
+function showPdfReady(blob, name, previewUrl, L){
+  const m = csvModalBase('PDF Hazır');
+  const im = document.createElement('img'); im.src = previewUrl;
+  im.style.cssText = 'display:block;max-width:100%;max-height:46vh;margin:0 auto 8px;background:#fff;border:1px solid #3a3d42;box-shadow:0 0 0 ' + '6px #fff;';
+  const t = document.createElement('div'); t.style.cssText = 'font-size:13px;color:#cfd3d8;text-align:center;';
+  t.textContent = name + ' · ' + Math.max(1, Math.round(blob.size/1024)) + ' KB';
+  m.body.append(im, t);
+  const file = (()=>{ try{ return new File([blob], name, { type:'application/pdf' }); }catch(e){ return null; } })();
+  const canShare = !!(file && navigator.canShare && (()=>{ try{ return navigator.canShare({ files:[file] }); }catch(e){ return false; } })());
+  const bOpen = csvBtn('Aç / Yazdır', ()=>{
+    const u = URL.createObjectURL(blob);
+    const w = window.open(u, '_blank');
+    if(!w) showToast('Açılamadı — "İndir" ile kaydet', 3000);
+  });
+  const bDl = csvBtn('İndir', ()=>{ deliverDownload(blob, name); showToast('PDF indiriliyor: İndirilenler klasörüne bak', 3500); }, true);
+  if(canShare) m.foot.append(csvBtn('Paylaş', ()=>{ navigator.share({ files:[file], title:name }).catch(()=>{}); }));
+  m.foot.append(bOpen, csvBtn('Kapat', ()=>m.close()), bDl);
 }
 
 
