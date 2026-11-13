@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Çizgi CAD v16.16 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
+<title>Çizgi CAD v16.21 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1d1f">
 <meta name="mobile-web-app-capable" content="yes">
@@ -203,6 +203,7 @@
   window.__appSaveBlob = function(blob, name, action){
     return toB64(blob).then(b64 => {
       const m = mimeFor(name, blob.type), B = window.AndroidBridge;
+      if(action === 'saveas' && B.saveAs) return B.saveAs(name, m, b64);
       return action === 'open' ? B.openFile(name, m, b64) : action === 'share' ? B.shareFile(name, m, b64) : B.saveFile(name, m, b64);
     });
   };
@@ -504,8 +505,17 @@ function feedTrackedPointsFromPoints(pts){
 let lastPtrType = 'mouse';
 let snapSens = 'orta';
 try{ snapSens = localStorage.getItem('cizgi_snap_sens') || 'orta'; }catch(e){}
-const SNAP_SENS_PX = { az:18, orta:30, cok:45 };
-function snapRadiusPx(){ return (lastPtrType === 'pen' || lastPtrType === 'touch') ? (SNAP_SENS_PX[snapSens] || 30) : 14; }
+// Ekranda gerçek 1 cm kaç piksel? (Ekran ölçü ayarı ile cihaz cihaz düzeltilir)
+function cmPx(){
+  let v = NaN; try{ v = parseFloat(localStorage.getItem('cizgi_px_per_cm')); }catch(e){}
+  if(v > 5) return v;
+  let coarse = false; try{ coarse = window.matchMedia('(pointer: coarse)').matches; }catch(e){}
+  return coarse ? 63 : 37.8;    // dokunmatik: 160 dpi kabulü; bilgisayar: 96 dpi
+}
+let SNAP_SENS_PX = {};
+function updateSnapPx(){ const c = cmPx(); SNAP_SENS_PX = { az: 0.5 * c, orta: c, cok: 1.5 * c }; }
+updateSnapPx();
+function snapRadiusPx(){ return (lastPtrType === 'pen' || lastPtrType === 'touch') ? (SNAP_SENS_PX[snapSens] || cmPx()) : 14; }
 function computeSnap(worldPt, excludeId){
   if(!snapOn) return { point: worldPt, marker: null, guides: [], trackBase: null, trackDir: null, trackDist: 0 };
   
@@ -892,19 +902,36 @@ let lineOnly = false;
 try{ lineOnly = localStorage.getItem('cizgi_line_only') === '1'; }catch(e){}
 let hideDims = false;
 try{ hideDims = localStorage.getItem('cizgi_hide_dims') === '1'; }catch(e){}
+// 3 çeşit ölçü: auto = çizerken çıkan uzunluklar, tool = Ölçü aracıyla konanlar, design = tasarım ölçüleri (3D'de de görünür)
+// Her biri ayrı açılıp kapanır; ayar bu cihazda kalır.
+let dimShow = { auto: !hideDims, tool: !hideDims, design: !hideDims };
+try{ const d = JSON.parse(localStorage.getItem('cizgi_dim_show_v1') || 'null'); if(d) dimShow = { auto: d.auto !== false, tool: d.tool !== false, design: d.design !== false }; }catch(e){}
+let dimDesignNext = false;   // Ölçü aracı bir sonraki ölçüyü tasarım ölçüsü olarak koysun
+let dimDesignPick = false;   // ölçüye dokununca tasarım <-> normal
+let offsetPick = null;       // dokunmatik ofset: {stage:'ref'} sonra {stage:'dist', ref}
+function dimKind(s){ return s && s.design ? 'design' : 'tool'; }
+function dimVisible(s){ return !!dimShow[dimKind(s)]; }
+function saveDimShow(){
+  hideDims = !dimShow.auto && !dimShow.tool && !dimShow.design;
+  try{ localStorage.setItem('cizgi_dim_show_v1', JSON.stringify(dimShow)); localStorage.setItem('cizgi_hide_dims', hideDims ? '1' : '0'); }catch(e){}
+}
 function updateHideDimsButton(){
   const b = document.getElementById('btnHideDims');
   if(!b) return;
-  b.classList.toggle('on', hideDims);
-  document.getElementById('hideDimsIcon').textContent = hideDims ? '👁️' : '🙈';
-  document.getElementById('hideDimsLbl').textContent = hideDims ? 'Ölçü Göster' : 'Ölçü Gizle';
+  const anyOff = !dimShow.auto || !dimShow.tool || !dimShow.design;
+  b.classList.toggle('on', anyOff);
+  document.getElementById('hideDimsIcon').textContent = anyOff ? '👁️' : '🙈';
+  document.getElementById('hideDimsLbl').textContent = 'Ölçüler ▾';
 }
 function setHideDims(v){
-  hideDims = !!v;
-  try{ localStorage.setItem('cizgi_hide_dims', hideDims ? '1' : '0'); }catch(e){}
+  dimShow.auto = dimShow.tool = dimShow.design = !v;
+  saveDimShow();
   updateHideDimsButton();
   render();
   showToast(hideDims ? 'Ölçüler gizlendi (çizerken yine görünür)' : 'Ölçüler gösteriliyor', 2200);
+}
+function setDimShow(kind, v){
+  dimShow[kind] = !!v; saveDimShow(); updateHideDimsButton(); render();
 }
 
 function drawGrid(){
@@ -972,17 +999,21 @@ function drawLabelBox(sx,sy,text,hitKey,mm,editable){
   if(showBtn){
     const btnX = bx + 10;
     const btnY = sy;
+    // Açıklaması/ismi olan parçada "?" dolu görünür
+    let hasNote = false;
+    try{ const sh = shapes.find(x => x.id === parseInt(String(hitKey), 10)); hasNote = !!(sh && ((sh.note && sh.note.trim()) || (sh.label && sh.label.trim()))); }catch(e){}
     ctx.beginPath();
     ctx.arc(btnX, btnY, 6.5, 0, Math.PI * 2);
     ctx.strokeStyle = '#ffb454';
     ctx.lineWidth = 1;
+    if(hasNote){ ctx.fillStyle = '#ffb454'; ctx.fill(); }
     ctx.stroke();
 
-    ctx.fillStyle = '#ffb454';
+    ctx.fillStyle = hasNote ? '#101214' : '#ffb454';
     ctx.font = 'bold 10px -apple-system, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('?', btnX, btnY + 0.5);
+    ctx.fillText(hasNote ? 'i' : '?', btnX, btnY + 0.5);
   }
 
   ctx.font = '600 12px -apple-system, sans-serif';
@@ -1046,18 +1077,18 @@ function drawShape(s, isSelected){
     const [p0,p1]=s.points;
     const a=worldToScreen(p0), b=worldToScreen(p1);
     ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-    if(!hideDims) drawLenLabel(p0,p1,p0.distanceTo(p1), s.id+':0');
+    if(dimShow.auto) drawLenLabel(p0,p1,p0.distanceTo(p1), s.id+':0');
   } else if(s.type==='polyline'){
     ctx.beginPath();
     s.points.forEach((p,i)=>{ const sp=worldToScreen(p); i===0?ctx.moveTo(sp.x,sp.y):ctx.lineTo(sp.x,sp.y); });
     ctx.stroke();
-    if(!hideDims) for(let i=0;i<s.points.length-1;i++) drawLenLabel(s.points[i],s.points[i+1],s.points[i].distanceTo(s.points[i+1]), s.id+':'+i);
+    if(dimShow.auto) for(let i=0;i<s.points.length-1;i++) drawLenLabel(s.points[i],s.points[i+1],s.points[i].distanceTo(s.points[i+1]), s.id+':'+i);
   } else if(s.type==='rect'){
     const p=s.points;
     ctx.beginPath();
     p.forEach((pt,i)=>{ const sp=worldToScreen(pt); i===0?ctx.moveTo(sp.x,sp.y):ctx.lineTo(sp.x,sp.y); });
     ctx.closePath(); ctx.stroke();
-    if(!hideDims){
+    if(dimShow.auto){
       drawLenLabel(p[0],p[1],p[0].distanceTo(p[1]), s.id+':w');
       drawLenLabel(p[1],p[2],p[1].distanceTo(p[2]), s.id+':h');
     }
@@ -1065,9 +1096,9 @@ function drawShape(s, isSelected){
     // "Sadece Çizgi" modunda MDF parçaları tamamen gizlenir (veri silinmez)
     if(lineOnly){ ctx.restore(); return; }
     drawMdf(s, isSelected);
-    if(!hideDims) drawLenLabel(s.points[0], s.points[1], s.points[0].distanceTo(s.points[1]), s.id+':0', true, mdfThicknessVec(s.points[0], s.points[1], s.rawCursor));
+    if(dimShow.auto) drawLenLabel(s.points[0], s.points[1], s.points[0].distanceTo(s.points[1]), s.id+':0', true, mdfThicknessVec(s.points[0], s.points[1], s.rawCursor));
   } else if(s.type==='dim'){
-    if(!hideDims) drawDimension(s, isSelected);
+    if(dimVisible(s)) drawDimension(s, isSelected);
   }
   ctx.restore();
 }
@@ -1112,7 +1143,7 @@ function drawDimension(s, isSelected){
   const [p0,p1] = s.points;
   const off = s.offset;
   const g = dimGeometry(p0,p1,off);
-  const color = isSelected ? '#4fa8ff' : '#c9cdd2';
+  const color = isSelected ? '#4fa8ff' : (s.design ? '#ff9f43' : '#c9cdd2');
   ctx.save();
   ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth=1.2;
   [g.ext0,g.ext1].forEach(seg=>{
@@ -1289,6 +1320,7 @@ function render(){
   drawInProgress();
   drawSnapAndTrack();
   drawCalibMarkers();
+  try{ if(typeof drawOffsetRef === 'function') drawOffsetRef(); }catch(e){}
   stZoom.textContent='Ölçek: '+Math.round(scale/3*100)+'%';
   stMode.textContent = 'Mod: ' + tool.toUpperCase();
 }
@@ -1354,7 +1386,7 @@ function onPointerDown(e){
 
   // Çizgi çizerken (ilk nokta konmuşsa) ölçü kutuları dokunuşu yakalamasın: çizgi karşı kenarda bitebilsin
   const hitLabel = drawing ? null : hitTestLabel(lp);
-  if(hitLabel){ openLabelEditor(hitLabel); return; }
+  if(hitLabel){ if(hitLabel.q) openNoteEditor(hitLabel.key); else openLabelEditor(hitLabel); return; }
   closeLabelEditor();
 
   if(pointers.size===2){ startPinch(); return; }
@@ -1363,6 +1395,8 @@ function onPointerDown(e){
 
   if(shouldDraw(e)){
     const world = screenToWorld(lp);
+    if(offsetPick && !drawing){ const sn = computeSnap(world, null); offsetPickRef(sn.point); return; }
+    if(dimDesignPick){ const hd = hitTestShape(world); if(hd && hd.type === 'dim'){ toggleDimDesign(hd); return; } }
     if(tool==='select'){ startSelectDrag(world, e); return; }
     if(tool==='eraser'){ eraseAt(world); return; }
     if(tool==='calib'){ handleCalibTap(world); return; }
@@ -1524,8 +1558,10 @@ function handleDrawTap(worldPt){
       pushHistory();
       const p0=drawing.points[0], p1=drawing.points[1];
       const off = signedOffsetFromLine(p0,p1,worldPt);
-      addShape({type:'dim', points:[p0,p1], offset: off===0?8:off});
-      if(hideDims) showToast('Ölçü eklendi, ama ölçüler gizli. Görmek için Ölçü Göster', 3500);
+      const nd = addShape({type:'dim', points:[p0,p1], offset: off===0?8:off});
+      if(dimDesignNext) nd.design = true;
+      if(!dimVisible(nd)) showToast('Ölçü eklendi, ama bu ölçü çeşidi gizli. Görmek için Ölçüler menüsü', 3500);
+      else if(nd.design) showToast('Tasarım ölçüsü eklendi (turuncu, 3D\'de de görünecek)', 2500);
       drawing=null; liveWorld=null; snapResult=null; clearTrackedPoints(); autosave();
     }
   }
@@ -1587,7 +1623,7 @@ function promptShapeLabel(s){
 
 // Klavyeden Santimetre Formatında Değer Yazılması
 window.addEventListener('keydown',(e)=>{
-  if(e.target.tagName === 'INPUT') return;
+  if(e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
 
   if(e.key==='Enter'){
     if(directTypedLength.length > 0){
@@ -1597,9 +1633,7 @@ window.addEventListener('keydown',(e)=>{
     if(drawing && drawing.type==='polyline') finishPolyline();
   }
 
-  if(e.key==='Escape'){ 
-    drawing=null; liveWorld=null; snapResult=null; dragSnapshot=null; hoverTrackPoint=null; clearTrackedPoints(); resetDirectInput(); render(); 
-  }
+  if(e.key==='Escape'){ cancelCurrentAction(); }
 
   if((e.ctrlKey || e.metaKey) && e.key==='z'){ undo(); }
   if(!e.ctrlKey && !e.metaKey && !e.altKey){
@@ -1618,6 +1652,13 @@ window.addEventListener('keydown',(e)=>{
     }
   }
 });
+
+// ESC / Vazgeç: yarım kalan çizimi, ofset seçimini ve yazılan ölçüyü iptal eder
+function cancelCurrentAction(){
+  drawing=null; liveWorld=null; snapResult=null; dragSnapshot=null; hoverTrackPoint=null; clearTrackedPoints(); resetDirectInput();
+  try{ if(typeof tbCancelExtras === 'function') tbCancelExtras(); }catch(e){}
+  render();
+}
 
 function updateDirectInputUI(){
   if(directTypedLength.length > 0){
@@ -1683,7 +1724,7 @@ function hitTestShape(worldPt){
       const p=s.points;
       for(let j=0;j<4;j++) if(worldPt.distanceToSegment(p[j], p[(j+1)%4]) < tol) return s;
     } else if(s.type==='dim'){
-      if(hideDims) continue;
+      if(!dimVisible(s)) continue;
       const g=dimGeometry(s.points[0],s.points[1],s.offset);
       if(worldPt.distanceToSegment(g.dimP0, g.dimP1) < tol) return s;
     }
@@ -1755,7 +1796,11 @@ function pasteClipboard(){
 }
 
 function hitTestLabel(lp){
-  for(const h of labelHitboxes) if(lp.x>=h.x && lp.x<=h.x+h.w && lp.y>=h.y && lp.y<=h.y+h.h) return h;
+  // parmak/kalem için kutunun çevresi biraz genişletilir
+  const pad = (window.matchMedia && matchMedia('(pointer:coarse)').matches) ? 6 : 0;
+  for(const h of labelHitboxes) if(lp.x>=h.x-pad && lp.x<=h.x+h.w+pad && lp.y>=h.y-pad && lp.y<=h.y+h.h+pad){
+    return Object.assign({}, h, { q: lp.x <= h.x + 22 });   // q: "?" düğmesine basıldı
+  }
   return null;
 }
 function openLabelEditor(hit){
@@ -1834,7 +1879,7 @@ overlayClick.addEventListener('pointerdown', closeMenu);
 
 document.getElementById('cmLabel').addEventListener('click', ()=>{
   closeMenu();
-  if(contextMenuTarget && contextMenuTarget.type==='mdf') promptShapeLabel(contextMenuTarget);
+  if(contextMenuTarget) openNoteEditor(String(contextMenuTarget.id));
 });
 document.getElementById('cmEditLen').addEventListener('click', ()=>{
   closeMenu();
@@ -1972,6 +2017,7 @@ updateCenterButton(); updateLineOnlyButton();
 
 const drawIcons = { select:'↖', line:'╱', polyline:'⌇', rect:'▭', mdf:'▬', divide:'☰' };
 function setTool(t){
+  dimDesignNext=false; dimDesignPick=false; offsetPick=null;
   tool=t; calibPts=[]; divideSel=null; drawing=null; liveWorld=null; snapResult=null; dragSnapshot=null; hoverTrackPoint=null; clearTrackedPoints(); resetDirectInput();
   document.getElementById('grpDrawIcon').textContent = drawIcons[t] || '↖';
   document.getElementById('grpDraw').classList.toggle('active', ['select','line','polyline','rect','mdf','divide'].includes(t));
@@ -2018,7 +2064,7 @@ document.getElementById('grpEdit').addEventListener('click', function(){
 document.getElementById('btnEraser').addEventListener('click', ()=>setTool(tool==='eraser'?'select':'eraser'));
 document.getElementById('btnUndo').addEventListener('click', undo);
 document.getElementById('toolDim').addEventListener('click', ()=>setTool(tool==='dim'?'select':'dim'));
-document.getElementById('btnHideDims').addEventListener('click', ()=>setHideDims(!hideDims));
+document.getElementById('btnHideDims').addEventListener('click', function(){ openDimMenu(this); });
 updateHideDimsButton();
 
 btnVoiceToggle.addEventListener('click', function(){
@@ -2043,8 +2089,36 @@ const btnSnap=document.getElementById('btnSnap');
 btnSnap.addEventListener('click', ()=>{ snapOn=!snapOn; btnSnap.classList.toggle('on',snapOn); if(!snapOn) clearTrackedPoints(); });
 
 ['pointerdown','pointermove'].forEach(t => wrap.addEventListener(t, e => { lastPtrType = e.pointerType || 'mouse'; }, true));
+function openScreenCalib(){
+  const m = csvModalBase('Ekran Ölçü Ayarı (gerçek 1 cm)');
+  let ppc = cmPx();
+  const info = document.createElement('div'); info.style.cssText = 'font-size:13px;color:#cfd3d8;margin-bottom:8px;';
+  info.textContent = 'Bir kredi/banka kartını ekrana tut. Turuncu çerçeve kartla tam aynı boyda olana kadar − / + ile ayarla. (Kart: 8,56 × 5,4 cm)';
+  const box = document.createElement('div'); box.style.cssText = 'display:flex;justify-content:center;align-items:center;min-height:240px;overflow:hidden;';
+  const card = document.createElement('div'); card.style.cssText = 'border:2px solid #ffb454;border-radius:8px;background:rgba(255,180,84,.08);display:flex;align-items:center;justify-content:center;color:#ffb454;font-weight:700;';
+  box.appendChild(card);
+  const rule = document.createElement('div'); rule.style.cssText = 'margin:8px auto 4px;height:14px;border:1px solid #9aa0a6;border-top:none;position:relative;';
+  const val = document.createElement('div'); val.style.cssText = 'text-align:center;font-size:12px;color:#9aa0a6;';
+  const draw = () => {
+    card.style.width = (8.56 * ppc) + 'px'; card.style.height = (5.398 * ppc) + 'px'; card.textContent = 'KART';
+    rule.style.width = (5 * ppc) + 'px';
+    rule.innerHTML = ''; for(let i = 0; i <= 5; i++){ const t = document.createElement('div'); t.style.cssText = 'position:absolute;bottom:0;width:1px;height:14px;background:#9aa0a6;left:' + (i * ppc) + 'px'; rule.appendChild(t); }
+    val.textContent = 'Üstteki çizgi 5 cm. Ekranda 1 cm = ' + ppc.toFixed(1).replace('.', ',') + ' piksel';
+  };
+  const ctl = document.createElement('div'); ctl.style.cssText = 'display:flex;gap:8px;justify-content:center;margin-top:8px;';
+  const mkB = (t, d) => { const b = csvBtn(t, () => { ppc = Math.max(15, Math.min(200, ppc + d)); draw(); }); b.style.minWidth = '56px'; b.style.fontSize = '18px'; return b; };
+  ctl.append(mkB('−−', -2), mkB('−', -0.3), mkB('+', 0.3), mkB('++', 2));
+  m.body.append(info, box, rule, val, ctl);
+  draw();
+  m.foot.append(
+    csvBtn('Varsayılan', () => { try{ localStorage.removeItem('cizgi_px_per_cm'); }catch(e){} ppc = cmPx(); draw(); }),
+    csvBtn('İptal', () => m.close()),
+    csvBtn('Kaydet', () => { try{ localStorage.setItem('cizgi_px_per_cm', String(ppc)); }catch(e){} updateSnapPx(); m.close(); render(); showToast('Ekran ölçüsü kaydedildi: hata payı artık gerçek 1 cm'); }, true)
+  );
+}
 document.getElementById('btnSnapMenu').addEventListener('click', function(){
   openMenu(this, [
+    { icon:'📐', label:'Ekran ölçü ayarı (gerçek 1 cm)', onClick: openScreenCalib },
     {
       icon: '🎯',
       label: 'Kalemle yakalama: ' + ({az:'Az', orta:'Orta', cok:'Çok'}[snapSens] || 'Orta') + ' (değiştir)',
@@ -2053,7 +2127,7 @@ document.getElementById('btnSnapMenu').addEventListener('click', function(){
         snapSens = snapSens === 'az' ? 'orta' : snapSens === 'orta' ? 'cok' : 'az';
         try{ localStorage.setItem('cizgi_snap_sens', snapSens); }catch(e){}
         btnEl.querySelector('span:last-child').textContent = 'Kalemle yakalama: ' + ({az:'Az', orta:'Orta', cok:'Çok'}[snapSens]) + ' (değiştir)';
-        showToast('Kalem/parmakla yakalama alanı: ' + ({az:'Az (18 px)', orta:'Orta (30 px)', cok:'Çok (45 px)'}[snapSens]));
+        showToast('Kalem/parmakla yakalama alanı: ' + ({az:'Az (0,5 cm)', orta:'Orta (1 cm)', cok:'Çok (1,5 cm)'}[snapSens]));
       }
     },
     {
@@ -2126,6 +2200,11 @@ document.getElementById('grpView').addEventListener('click', function(){
     {icon: lineOnly?'▦':'╱', label: lineOnly?'MDF Parçalarını Göster':'Sadece Çizgileri Göster (MDF gizle)', onClick:()=>setLineOnly(!lineOnly)},
     {icon:'＋', label:'Yakınlaştır', keepOpen:true, onClick:()=>{ const r=wrap.getBoundingClientRect(); zoomAt({x:r.width/2,y:r.height/2},1.25); }},
     {icon:'－', label:'Uzaklaştır', keepOpen:true, onClick:()=>{ const r=wrap.getBoundingClientRect(); zoomAt({x:r.width/2,y:r.height/2},0.8); }},
+    {icon:'⌨', label:'Dokunmatik çubuk (Vazgeç/Ofset/123): ' + ({auto:'Otomatik', on:'Açık', off:'Kapalı'}[tbSetting()]), onClick:()=>{
+      const nx = {auto:'on', on:'off', off:'auto'}[tbSetting()];
+      try{ localStorage.setItem(TB_KEY, nx); }catch(e){}
+      tbRefresh(); showToast('Dokunmatik çubuk: ' + ({auto:'Otomatik (tablet/telefonda açık)', on:'Açık', off:'Kapalı'}[nx]), 2500);
+    }},
   ]);
 });
 
@@ -2926,12 +3005,7 @@ function saveToFile(){
   const d = new Date(), z = n => String(n).padStart(2,'0');
   const name = `Cizim_${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}.cizgi`;
   const blob = new Blob([JSON.stringify(data)], { type:'application/octet-stream' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = name;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(url), 5000);
-  showToast('Kaydedildi: ' + name, 3500);
+  openExportChooser(blob, name, 'Çizim dosyası (.cizgi)');
 }
 function openFromFile(){
   const inp = document.createElement('input');
@@ -3248,14 +3322,9 @@ function buildCsvText(groupList){
 
 function downloadCsv(groupList){
   const blob = new Blob(["﻿" + buildCsvText(groupList)], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', `MDF_Kesim_ve_Bant_Listesi_${new Date().toISOString().slice(0,10)}.csv`);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  showToast(`${groupList.length} satır kesim listesi Excel olarak aktarıldı.`);
+  // Kaydetmeden önce sorulur: Paylaş / Farklı kaydet / İndirilenler (dosyanın içeriği aynen aynı)
+  openExportChooser(blob, `MDF_Kesim_ve_Bant_Listesi_${new Date().toISOString().slice(0,10)}.csv`, 'Kesim Listesi (Excel)');
+  showToast(`${groupList.length} satır kesim listesi hazır.`);
 }
 
 function focusOnMdf(sh){
@@ -3273,6 +3342,7 @@ function focusOnMdf(sh){
 
 // Önizleme: satırlar kontrol edilir, istenmeyen/eski parça gösterilip silinebilir
 function openCsvPreview(depthMm){
+  hideBackToList();
   const m = csvModalBase('Kesim Listesi Önizleme (genel derinlik ' + fmtLenPlain(depthMm) + ' cm)');
   const sumEl = document.createElement('div');
   sumEl.style.cssText='font-weight:700;margin-bottom:6px;';
@@ -3426,7 +3496,7 @@ function openCsvPreview(depthMm){
         const tx = document.createElement('div'); tx.style.cssText='flex:1;min-width:0;';
         const len = fmtLenPlain(Math.round(o.P.points[0].distanceTo(o.P.points[1])));
         tx.textContent = len + ' cm parça: ucu ' + (o.kind==='tasma' ? 'diğer parçaya ' + o.amount.toFixed(1).replace('.',',') + ' mm giriyor' : o.amount.toFixed(1).replace('.',',') + ' mm boşluk bırakıyor');
-        const gb = csvBtn('Göster', ()=>{ m.close(); focusOnMdf(o.P); });
+        const gb = csvBtn('Göster', ()=>{ m.close(); focusOnMdf(o.P); showBackToList(depthMm); });
         const fx = csvBtn('Düzelt', ()=>{
           pushHistory(); o.P.points[o.k] = o.target; autosave(); render(); refresh();
         });
@@ -3476,7 +3546,7 @@ function openCsvPreview(depthMm){
         '<br><span style="font-size:12px;color:#9aa0a6;">Bant: ' + (bants.length ? bants.join(', ') : 'yok') + (offscreen ? ' · <span style="color:#ff8a65;">ekran dışında</span>' : '') + '</span>';
       const sh1 = csvBtn('Göster', ()=>{
         const sh = shapes.find(x=>x.id===g.ids[0]); if(!sh) return;
-        m.close(); focusOnMdf(sh); showToast('Parça seçildi. Listeye dönmek için tekrar Aktar');
+        m.close(); focusOnMdf(sh); showBackToList(depthMm);
       });
       const del = csvBtn('Sil', ()=>{
         if(!confirm(g.count + ' adet ' + fmtLenPlain(g.lengthMm) + ' cm parça çizimden silinsin mi?')) return;
@@ -3815,7 +3885,7 @@ function showPdfReady(blob, name, previewUrl, L){
   });
   const bDl = csvBtn('İndir', ()=>{ deliverDownload(blob, name); if(!inApp) showToast('PDF indiriliyor: İndirilenler klasörüne bak', 3500); }, true);
   if(canShare) m.foot.append(csvBtn('Paylaş', ()=>{ if(inApp){ window.__appSaveBlob(blob, name, 'share'); return; } navigator.share({ files:[file], title:name }).catch(()=>{}); }));
-  m.foot.append(bOpen, csvBtn('Kapat', ()=>m.close()), bDl);
+  m.foot.append(bOpen, csvBtn('Farklı kaydet', ()=>exportSaveAs(blob, name)), csvBtn('Kapat', ()=>m.close()), bDl);
 }
 
 
@@ -4244,6 +4314,9 @@ window.getTasarlaPhotoPayload = function(){
 var skPage = 'draw';
 const SK_KEY = 'cizgi_sketch_v1';
 let sk = { strokes: [], items: [], pins: [], nextId: 1, out: 'mdf', topOver: true };
+let skDims = 'all';   // 'all' tümü | 'todo' sadece onaylanmamış (!) | 'off' gizli
+try{ skDims = localStorage.getItem('cizgi_sketch_dims') || 'all'; }catch(e){}
+const SK_DIMS_LBL = { all:'📏 Ölçüler: Tümü', todo:'📏 Ölçüler: Sadece !', off:'📏 Ölçüler: Gizli' };
 let skUndoStack = [];
 let skMarkerBoxes = [];
 let skCur = null, skRef = null, skPenSeen = false;
@@ -4275,7 +4348,7 @@ function skHookMainUndo(){
 }
 skLoad();
 
-function skTolW(){ return (SNAP_SENS_PX[snapSens] || 30) / scale; }
+function skTolW(){ return cmPx() / scale; }   // Elle Çiz hata payı: ekranda gerçek 1 cm
 function skItem(id){ return sk.items.find(i => i.id === id); }
 function skBand(it){ return it.band || [0, 0]; }
 // Uç koordinatı (parçanın kendi ekseni boyunca). Bağlıysa karşı parçanın yüzüne göre hesaplanır.
@@ -4328,46 +4401,324 @@ function skRdp(pts, eps){
 function skFix(){
   if(!sk.strokes.length){ showToast('Düzeltilecek elle çizim yok'); return; }
   skPush();
-  let order = sk.items.reduce((m, i) => Math.max(m, i.order || 0), 0);
+  const px = v => v / scale;
   const tol = skTolW();
+  const CM = tol;                  // ekranda gerçek 1 cm (çizim birimi cinsinden)
+  // ---- A) Kalem çizgilerini düz parçalara ayır; kuyruk / kanca / kısa sapmaları at ----
+  let L = [];
   sk.strokes.forEach(st => {
-    const pts = st.pts;
-    if(!pts || pts.length < 2) return;
-    const simp = skRdp(pts, st.eps || (10 / scale));
-    const segs = [];
+    if(!st.pts || st.pts.length < 2) return;
+    const simp = skRdp(st.pts, st.eps || px(10));
+    let segs = [];
     for(let i = 0; i < simp.length - 1; i++){
-      const a = simp[i], b = simp[i + 1];
-      const len = Math.hypot(b.x - a.x, b.y - a.y);
-      if(len < (st.minLen || 15 / scale)) continue;
+      const a = simp[i], b = simp[i + 1], len = Math.hypot(b.x - a.x, b.y - a.y);
       const ang = Math.abs(Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI);
       let type = 'd';
-      if(ang < 20 || ang > 160) type = 'h';
-      else if(ang > 70 && ang < 110) type = 'v';
-      const prev = segs[segs.length - 1];
-      // aynı yönde arka arkaya gelen parçaları birleştir (titreme)
-      if(prev && prev.type === type && type !== 'd'){
-        const cPrev = type === 'h' ? (prev.a.y + prev.b.y) / 2 : (prev.a.x + prev.b.x) / 2;
-        const cNow = type === 'h' ? (a.y + b.y) / 2 : (a.x + b.x) / 2;
-        if(Math.abs(cPrev - cNow) < tol){ prev.b = b; continue; }
-      }
-      segs.push({ a, b, type });
+      if(ang < 30 || ang > 150) type = 'h'; else if(ang > 60 && ang < 120) type = 'v';
+      segs.push({ a, b, len, type });
     }
-    segs.forEach((sg, i) => {
-      const it = { id: sk.nextId++, origin:'sketch', order: ++order, lenOk:false, posOk:false, j0:null, j1:null };
-      if(sg.type === 'h'){ it.dir = 'h'; it.c = (sg.a.y + sg.b.y) / 2; it.s0 = Math.min(sg.a.x, sg.b.x); it.s1 = Math.max(sg.a.x, sg.b.x); }
-      else if(sg.type === 'v'){ it.dir = 'v'; it.c = (sg.a.x + sg.b.x) / 2; it.s0 = Math.min(sg.a.y, sg.b.y); it.s1 = Math.max(sg.a.y, sg.b.y); }
-      else { it.dir = 'd'; it.a = { x:sg.a.x, y:sg.a.y }; it.b = { x:sg.b.x, y:sg.b.y }; }
-      if(i === 0 && st.pin) it.pin = st.pin;
-      sk.items.push(it);
+    const maxLen = Math.max(...segs.map(s => s.len));
+    segs = segs.filter(s => s.type === 'd' ? s.len >= 1.5 * CM && s.len >= maxLen * 0.5 : (s.len >= 0.7 * CM || s.len >= maxLen * 0.9));
+    // aynı yöndeki ardışık parçalar tek parça
+    const out = [];
+    segs.forEach(sg => {
+      const prev = out[out.length - 1];
+      if(prev && prev.type === sg.type && sg.type !== 'd'){
+        const cp = sg.type === 'h' ? (prev.a.y + prev.b.y) / 2 : (prev.a.x + prev.b.x) / 2;
+        const cn = sg.type === 'h' ? (sg.a.y + sg.b.y) / 2 : (sg.a.x + sg.b.x) / 2;
+        if(Math.abs(cp - cn) <= CM){ prev.b = sg.b; prev.len += sg.len; return; }
+      }
+      out.push(Object.assign({}, sg));
+    });
+    out.forEach((sg, i) => {
+      const n = { j:[null, null], len: sg.len };
+      if(sg.type === 'h'){ n.dir = 'h'; n.c = (sg.a.y + sg.b.y) / 2; n.s0 = Math.min(sg.a.x, sg.b.x); n.s1 = Math.max(sg.a.x, sg.b.x); }
+      else if(sg.type === 'v'){ n.dir = 'v'; n.c = (sg.a.x + sg.b.x) / 2; n.s0 = Math.min(sg.a.y, sg.b.y); n.s1 = Math.max(sg.a.y, sg.b.y); }
+      else { n.dir = 'd'; n.a = { x:sg.a.x, y:sg.a.y }; n.b = { x:sg.b.x, y:sg.b.y }; }
+      if(i === 0 && st.pin) n.pin = st.pin;
+      L.push(n);
     });
   });
+  // ---- B) Kopuk / üst üste çizilmiş aynı hizadaki çizgileri birleştir ----
+  const ovl = (a, b) => Math.min(a.s1, b.s1) - Math.max(a.s0, b.s0);
+  let changed = true;
+  while(changed){
+    changed = false;
+    outer: for(let i = 0; i < L.length; i++) for(let k = i + 1; k < L.length; k++){
+      const a = L[i], b = L[k];
+      if(a.dir === 'd' || a.dir !== b.dir) continue;
+      const dc = Math.abs(a.c - b.c), o = ovl(a, b), minLen = Math.min(a.s1 - a.s0, b.s1 - b.s0) || 1;
+      const sequential = dc <= CM && o / minLen <= 0.3 && -o <= CM;        // kalem kaldırılıp devam edilmiş (1 cm'ye kadar boşluk)
+      const duplicate = dc <= CM && o / minLen > 0.3;                       // 1 cm'den yakın paralel = aynı çizgi
+      if(!sequential && !duplicate) continue;
+      const la = a.s1 - a.s0, lb = b.s1 - b.s0;
+      a.c = (a.c * la + b.c * lb) / (la + lb); a.s0 = Math.min(a.s0, b.s0); a.s1 = Math.max(a.s1, b.s1);
+      a.pin = a.pin || b.pin; L.splice(k, 1); changed = true; break outer;
+    }
+  }
+  L.forEach(l => { if(l.dir !== 'd') l.c0 = l.c; });
+  // ---- C) Çift çizgi = yan yana / alt-üst iki dolap: iki 18 mm tahta sırt sırta ----
+  // Bir çizginin bağlantısı var mı: dik bir çizginin ucu ona değiyor ya da onun ucu dik bir çizgiye değiyor (1 cm)
+  const pairConnected = a => L.some(o => {
+    if(o === a || o.dir === 'd' || o.dir === a.dir) return false;
+    const endTouch = [o.s0, o.s1].some(e => Math.abs(e - a.c0) <= CM) && o.c0 >= a.s0 - CM && o.c0 <= a.s1 + CM;
+    const ownTouch = [a.s0, a.s1].some(e => Math.abs(e - o.c0) <= CM) && a.c0 >= o.s0 - CM && a.c0 <= o.s1 + CM;
+    return endTouch || ownTouch;
+  });
+  let pairId = 0;
+  for(let i = 0; i < L.length; i++) for(let k = i + 1; k < L.length; k++){
+    const a = L[i], b = L[k];
+    if(a.dir === 'd' || a.dir !== b.dir || a.pair || b.pair) continue;
+    const dc = Math.abs(a.c0 - b.c0), o = ovl(a, b), minLen = Math.min(a.s1 - a.s0, b.s1 - b.s0);
+    if(dc <= CM || dc > 3 * CM || minLen < 2 * CM || o / minLen < 0.5) continue;   // 1–3 cm = yan yana dolap adayı
+    if(!pairConnected(a) || !pairConnected(b)) continue;                               // bağlantısız tek çizgi = sadece çizgi
+    // raflar da birbirine yakın olabilir: çift çizginin arası, iki yandaki komşu çizgilere olan aralıktan belirgin şekilde dar olmalı
+    const nb = (x, away) => { let d = Infinity; L.forEach(o => { if(o === a || o === b || o.dir !== x.dir) return; const ov = ovl(x, o) / Math.min(x.s1 - x.s0, o.s1 - o.s0); if(ov < 0.3) return; const dd = (o.c0 - x.c0) * away; if(dd > 0) d = Math.min(d, dd); }); return d; };
+    const lo0 = a.c0 < b.c0 ? a : b, hi0 = lo0 === a ? b : a;
+    if(dc >= 0.4 * nb(lo0, -1) || dc >= 0.4 * nb(hi0, 1)) continue;
+    pairId++;
+    const lo = a.c0 < b.c0 ? a : b, hi = lo === a ? b : a;
+    lo.pair = { id:pairId, side:-1, mate:hi }; hi.pair = { id:pairId, side:1, mate:lo };
+  }
+  // ---- D) Dik çizgileri çift çizgide (dolap sınırında) böl ----
+  const extT = l => Math.min(CM, 0.45 * (l.s1 - l.s0));   // uç 1 cm'ye kadar yakınsa bağlanır
+  const splitAt = (l, cutLo, cutHi) => { const n = Object.assign({}, l, { j:[null, null], s0:cutHi, pin:null }); l.s1 = cutLo; L.push(n); return n; };
+  const pairs = L.filter(l => l.pair && l.pair.side < 0);
+  pairs.forEach(A => {
+    const B = A.pair.mate, lo = A.c0, hi = B.c0;
+    const spanLo = Math.min(A.s0, B.s0) - CM, spanHi = Math.max(A.s1, B.s1) + CM;
+    L.slice().forEach(l => {
+      if(l.dir === 'd' || l.dir === A.dir || l.pair) return;
+      if(l.c < spanLo || l.c > spanHi) return;
+      if(l.s0 < lo - px(10) && l.s1 > hi + px(10)) splitAt(l, lo, hi);
+    });
+  });
+  // ---- E) Raf, içinden geçtiği dikmede ikiye bölünür (dikme bütün kalır) ----
+  L.filter(l => l.dir === 'v').forEach(V => {
+    L.slice().forEach(l => {
+      if(l.dir !== 'h') return;
+      const e = CM;
+      if(!(V.s0 < l.c - e && V.s1 > l.c + e)) return;                 // dikme rafın iki yanına uzanıyor
+      if(!(V.c0 > l.s0 + extT(l) && V.c0 < l.s1 - extT(l))) return;   // raf dikmenin iki yanına uzanıyor
+      splitAt(l, V.c0, V.c0);
+    });
+  });
+  // ---- F) Uçları en yakın dik parçaya getir: taşan geri çekilir, eksik kalan tamamlanır ----
+  const fixedC = [];   // Elle Çiz sayfasında önceden duran parçalar (değişmez, sadece bağlanılır)
+  sk.items.forEach(it => {
+    if(it.dir === 'd') return;
+    const b = skBand(it);
+    fixedC.push({ fixed:true, item:it, dir:it.dir, p: it.c + (b[0] + b[1]) / 2, lo: skEnd(it, 0), hi: skEnd(it, 1) });
+  });
+  const cand = l => {
+    const r = [];
+    L.forEach(o => { if(o !== l && o.dir !== 'd' && o.dir !== l.dir) r.push({ o, p:o.c0, lo:o.s0, hi:o.s1 }); });
+    fixedC.forEach(f => { if(f.dir !== l.dir) r.push({ f, p:f.p, lo:f.lo, hi:f.hi }); });
+    return r;
+  };
+  L.forEach(l => {
+    if(l.dir === 'd') return;
+    const cs = cand(l), win = extT(l);
+    [0, 1].forEach(k => {
+      const pos = k ? l.s1 : l.s0;
+      let best = null, bd = Infinity;
+      const ref = l.pair ? l.c0 : l.c;
+      cs.forEach(c => {
+        if(ref < c.lo - CM || ref > c.hi + CM) return;                  // karşı parça bu hizaya ulaşmıyor
+        const out = ref < c.lo ? c.lo - ref : ref > c.hi ? ref - c.hi : 0;   // karşı parçanın ucundan ne kadar dışarıda
+        const d = Math.abs(c.p - pos);
+        if(d <= win && d + out * 2 < bd){ bd = d + out * 2; best = c; }
+      });
+      if(!best) return;
+      // çift çizgiye geldiyse kendi dolabının tarafındaki tahtayı seç
+      if(best.o && best.o.pair){
+        const m = best.o.pair.mate;
+        const inward = k ? -1 : 1;                                      // sağ/alt uç → küçük taraftaki, sol/üst uç → büyük taraftaki
+        if((best.o.pair.side > 0) === (inward < 0)) best = { o:m, p:m.c0, lo:m.s0, hi:m.s1 };
+      }
+      l.j[k] = best;
+      if(k) l.s1 = best.p; else l.s0 = best.p;
+    });
+  });
+  // ---- G) Modüller (birbirine bağlı parçalar) ve 3 cm'den yakın rafları/dikmeleri hizala ----
+  const par = new Map(); L.forEach((l, i) => par.set(l, l));
+  const find = x => { while(par.get(x) !== x) x = par.get(x); return x; };
+  L.forEach(l => l.j && l.j.forEach(c => { if(c && c.o) par.set(find(l), find(c.o)); }));
+  const mods = new Map();
+  L.forEach(l => { if(l.dir === 'd') return; const r = find(l); if(!mods.has(r)) mods.set(r, []); mods.get(r).push(l); });
+  mods.forEach(m => {
+    ['h', 'v'].forEach(dir => {
+      const ls = m.filter(l => l.dir === dir && !l.pair);
+      if(ls.length < 2) return;
+      const cs = ls.map(l => l.c0), mn = Math.min(...cs), mx = Math.max(...cs);
+      const inner = ls.filter(l => l.c0 > mn + px(10) && l.c0 < mx - px(10)).sort((a, b) => a.c0 - b.c0);
+      let grp = [];
+      const flush = () => { if(grp.length > 1){ const avg = grp.reduce((s, l) => s + l.c0, 0) / grp.length; grp.forEach(l => { l.c0 = avg; }); } grp = []; };
+      inner.forEach(l => { if(grp.length && l.c0 - grp[0].c0 > CM) flush(); grp.push(l); });   // 1 cm'den yakın = aynı hiza
+      flush();
+    });
+    // ---- H) Çerçevenin 4 kenarından biri eksikse tamamla ----
+    const hs = m.filter(l => l.dir === 'h'), vs = m.filter(l => l.dir === 'v');
+    if(hs.length < 1 || vs.length < 1 || m.length < 3) return;
+    const minY = Math.min(...hs.map(l => l.c0), ...vs.map(l => l.s0)), maxY = Math.max(...hs.map(l => l.c0), ...vs.map(l => l.s1));
+    const minX = Math.min(...vs.map(l => l.c0), ...hs.map(l => l.s0)), maxX = Math.max(...vs.map(l => l.c0), ...hs.map(l => l.s1));
+    const near = (v, w) => Math.abs(v - w) <= CM;
+    const has = { top: hs.some(l => near(l.c0, minY)), bot: hs.some(l => near(l.c0, maxY)), left: vs.some(l => near(l.c0, minX)), right: vs.some(l => near(l.c0, maxX)) };
+    const cnt = Object.values(has).filter(Boolean).length;
+    if(cnt !== 3 || maxX - minX < 2 * CM || maxY - minY < 2 * CM) return;
+    const sideL = vs.find(l => near(l.c0, minX)), sideR = vs.find(l => near(l.c0, maxX));
+    const topL = hs.find(l => near(l.c0, minY)), botL = hs.find(l => near(l.c0, maxY));
+    if(!has.top) L.push({ dir:'h', c:minY, c0:minY, s0:minX, s1:maxX, j:[{ o:sideL, p:minX }, { o:sideR, p:maxX }] });
+    if(!has.bot) L.push({ dir:'h', c:maxY, c0:maxY, s0:minX, s1:maxX, j:[{ o:sideL, p:minX }, { o:sideR, p:maxX }] });
+    if(!has.left) L.push({ dir:'v', c:minX, c0:minX, s0:minY, s1:maxY, j:[{ o:topL, p:minY }, { o:botL, p:maxY }] });
+    if(!has.right) L.push({ dir:'v', c:maxX, c0:maxX, s0:minY, s1:maxY, j:[{ o:topL, p:minY }, { o:botL, p:maxY }] });
+  });
+  // ---- I) Çift çizgi: iki tahta aynı çizgiye (sırt sırta), sonra parçaları oluştur ----
+  pairs.forEach(A => { const B = A.pair.mate, mid = (A.c0 + B.c0) / 2; A.c0 = mid; B.c0 = mid; });
+  // ---- J) Raf (ve dikme) aralıkları birbirinden en fazla 1 cm farklıysa eşit aralığa dağıt ----
+  {
+    const T = sk.out === 'line' ? 0 : SK_T;
+    const par2 = new Map(); L.forEach(l => par2.set(l, l));
+    const f2 = x => { while(par2.get(x) !== x) x = par2.get(x); return x; };
+    L.forEach(l => l.j && l.j.forEach(c => { if(c && c.o) par2.set(f2(l), f2(c.o)); }));
+    const mods2 = new Map();
+    L.forEach(l => { if(l.dir === 'd') return; const r = f2(l); if(!mods2.has(r)) mods2.set(r, []); mods2.get(r).push(l); });
+    mods2.forEach(m => ['h', 'v'].forEach(dir => {
+      const ls = m.filter(l => l.dir === dir);
+      if(ls.length < 3) return;
+      const cs = ls.map(l => l.c0), mn = Math.min(...cs), mx = Math.max(...cs);
+      const inner = ls.filter(l => l.c0 > mn + CM && l.c0 < mx - CM);
+      // aynı bölmedeki raflar: iki ucu aynı parçalara bağlı olanlar
+      const bays = new Map();
+      inner.forEach(l => { const k = (l.j[0] && (l.j[0].o || l.j[0].f)) || null, k2 = (l.j[1] && (l.j[1].o || l.j[1].f)) || null; const key = bays.size + '';
+        let found = null; bays.forEach((v, kk) => { if(v.k === k && v.k2 === k2) found = v; });
+        if(found) found.ls.push(l); else bays.set(key, { k, k2, ls:[l] }); });
+      const handled = new Set();
+      bays.forEach(bay => {
+        // aynı hizadaki (diğer bölmelerde de olan) rafları birlikte taşı
+        const ls2 = bay.ls.filter(l => !handled.has(l)).sort((a, b) => a.c0 - b.c0);
+        if(!ls2.length) return;
+        const lo = mn + T, hi = mx - T;                               // tavan altı / taban üstü (iç yüzler)
+        const n = ls2.length;
+        const gaps = [];
+        gaps.push(ls2[0].c0 - T / 2 - lo);
+        for(let i = 1; i < n; i++) gaps.push(ls2[i].c0 - ls2[i - 1].c0 - T);
+        gaps.push(hi - (ls2[n - 1].c0 + T / 2));
+        if(Math.max(...gaps) - Math.min(...gaps) > CM) return;         // 1 cm'den fazla fark: bilerek çizilmiş
+        const g = (hi - lo - n * T) / (n + 1);
+        ls2.forEach((l, i) => {
+          const old = l.c0, nw = lo + g * (i + 1) + T * (i + 0.5);
+          inner.forEach(o => { if(Math.abs(o.c0 - old) < 0.01){ o.c0 = nw; handled.add(o); } });
+        });
+      });
+    }));
+  }
+  let order = sk.items.reduce((m, i) => Math.max(m, i.order || 0), 0);
+  L.forEach(l => { l.id = sk.nextId++; });
+  L.forEach(l => {
+    const it = { id:l.id, origin:'sketch', order: ++order, lenOk:false, posOk:false, j0:null, j1:null };
+    if(l.dir === 'd'){ it.dir = 'd'; it.a = l.a; it.b = l.b; }
+    else {
+      it.dir = l.dir; it.c = l.c0; it.s0 = l.s0; it.s1 = l.s1;
+      [0, 1].forEach(k => {
+        const c = l.j[k]; if(!c) return;
+        const to = c.o ? c.o.id : c.f.item.id;
+        if(k) it.j1 = { to, mode:'clip' }; else it.j0 = { to, mode:'clip' };
+        if(c.o){ if(k) it.s1 = c.o.c0; else it.s0 = c.o.c0; }
+      });
+    }
+    if(l.pin) it.pin = l.pin;
+    sk.items.push(it);
+  });
   sk.strokes = [];
-  skJoinAll(tol);
+  // serbest kalan uçlar Çizim sayfasındaki MDF'ye dayansın
+  sk.items.forEach(it => { if(it.origin !== 'sketch' || it.dir === 'd') return; if(!it.j0) skSnapToMain(it, 0, tol); if(!it.j1) skSnapToMain(it, 1, tol); });
   skRoles(tol);
   skApplyPins();
   skSave(); render();
   const n = sk.items.filter(i => i.origin === 'sketch' && !i.lenOk).length;
-  showToast('Düzeltildi. Ölçü vermek için "!" işaretlerine dokun' + (n ? ' (' + n + ' parça)' : ''), 3500);
+  showToast('Düzeltildi' + (pairId ? ' (' + (pairId) + ' çift çizgi = yan yana dolap)' : '') + '. Ölçü için "!" işaretlerine dokun (' + n + ' parça)', 3500);
+}
+// Kural: iki dikey arasına çizilen yatay (ya da tersi) dikeylerin dışına taşmaz.
+// Uç, kestiği ilk dik parçada kesilir (taşan kısım parçanın %35'inden kısa olmalı; ortadan kesişmeler bozulmaz).
+function skClipOvershoot(tol){
+  const lim = 0.35, ct = tol * 0.5;   // kesişme sayılması için çizgi karşı parçanın gövdesinden geçmeli
+  sk.items.forEach(it => {
+    if(it.origin !== 'sketch' || it.dir === 'd' || it.j0 && it.j1) return;
+    const L = it.s1 - it.s0; if(L <= 0) return;
+    // dikey bir rafı geçerek aşağı/yukarı devam ediyorsa (ara dikme) kesilmez: sadece kısa taşmalar kesilir
+    const maxOver = it.dir === 'v' ? Math.min(L * lim, 60 / scale) : L * lim;
+    const cross = [];
+    sk.items.forEach(o => {
+      if(o === it || o.dir === 'd' || o.dir === it.dir) return;
+      const b = skBand(o), lo = o.c + b[0], hi = o.c + b[1];
+      const e0 = o.origin === 'import' ? skEnd(o, 0) : o.s0, e1 = o.origin === 'import' ? skEnd(o, 1) : o.s1;
+      if(it.c < e0 - ct || it.c > e1 + ct) return;
+      const mid = (lo + hi) / 2;
+      if(mid <= it.s0 || mid >= it.s1) return;
+      cross.push({ pos: mid, lo, hi, id: o.id });
+    });
+    shapes.forEach(sh => {
+      if(sh.type !== 'mdf' || !sh.points || sh.points.length < 2) return;
+      const c = getMdfCorners(sh.points[0], sh.points[1], sh.rawCursor), xs = c.map(q => q.x), ys = c.map(q => q.y);
+      const r = { x0:Math.min(...xs), x1:Math.max(...xs), y0:Math.min(...ys), y1:Math.max(...ys) };
+      const isV = (r.y1 - r.y0) > (r.x1 - r.x0);
+      if(it.dir === 'h' && isV && it.c >= r.y0 - ct && it.c <= r.y1 + ct) cross.push({ pos:(r.x0 + r.x1) / 2, lo:r.x0, hi:r.x1, main:true });
+      if(it.dir === 'v' && !isV && it.c >= r.x0 - ct && it.c <= r.x1 + ct) cross.push({ pos:(r.y0 + r.y1) / 2, lo:r.y0, hi:r.y1, main:true });
+    });
+    const inside = cross.filter(x => x.pos > it.s0 && x.pos < it.s1);
+    if(!inside.length) return;
+    inside.sort((a, b) => a.pos - b.pos);
+    const first = inside[0], last = inside[inside.length - 1];
+    let usedLeft = null;
+    if(!it.j0 && first.pos - it.s0 < maxOver){
+      usedLeft = first;
+      if(first.main) it.s0 = first.hi; else { it.s0 = first.pos; it.j0 = { to:first.id, mode:'clip' }; }
+    }
+    if(!it.j1 && last !== usedLeft && it.s1 - last.pos < maxOver){
+      if(last.main) it.s1 = last.lo; else { it.s1 = last.pos; it.j1 = { to:last.id, mode:'clip' }; }
+    }
+  });
+}
+// Kural: bir yatay (raf), içinden tam geçtiği dikeyde (ara dikme) iki ayrı rafa bölünür.
+function skSplitAtDividers(tol){
+  const ct = tol * 0.5;
+  let order = sk.items.reduce((m, i) => Math.max(m, i.order || 0), 0);
+  const add = [];
+  sk.items.forEach(it => {
+    if(it.origin !== 'sketch' || it.dir !== 'h') return;
+    const cuts = [];
+    sk.items.forEach(o => {
+      if(o === it || o.dir !== 'v') return;
+      const e0 = o.origin === 'import' ? skEnd(o, 0) : o.s0, e1 = o.origin === 'import' ? skEnd(o, 1) : o.s1;
+      if(!(e0 < it.c - ct && e1 > it.c + ct)) return;             // dikme rafın iki yanına da uzanmalı
+      const b = skBand(o), mid = o.c + (b[0] + b[1]) / 2;
+      if(mid <= it.s0 + ct || mid >= it.s1 - ct) return;
+      if((it.j0 && it.j0.to === o.id) || (it.j1 && it.j1.to === o.id)) return;
+      cuts.push({ pos:mid, lo:o.c + b[0], hi:o.c + b[1], id:o.id });
+    });
+    shapes.forEach(sh => {
+      if(sh.type !== 'mdf' || !sh.points || sh.points.length < 2) return;
+      const c = getMdfCorners(sh.points[0], sh.points[1], sh.rawCursor), xs = c.map(q => q.x), ys = c.map(q => q.y);
+      const r = { x0:Math.min(...xs), x1:Math.max(...xs), y0:Math.min(...ys), y1:Math.max(...ys) };
+      if((r.y1 - r.y0) <= (r.x1 - r.x0) || !(r.y0 < it.c - ct && r.y1 > it.c + ct)) return;
+      const mid = (r.x0 + r.x1) / 2;
+      if(mid <= it.s0 + ct || mid >= it.s1 - ct) return;
+      cuts.push({ pos:mid, lo:r.x0, hi:r.x1, main:true });
+    });
+    if(!cuts.length) return;
+    cuts.sort((a, b) => a.pos - b.pos);
+    const endJ = it.j1, endS = it.s1;
+    let cur = it;
+    cuts.forEach(cu => {
+      if(cu.main){ cur.s1 = cu.lo; cur.j1 = null; } else { cur.s1 = cu.pos; cur.j1 = { to:cu.id, mode:'clip' }; }
+      const n = { id: sk.nextId++, origin:'sketch', order: ++order, lenOk:false, posOk:false, dir:'h', c:it.c, j0:null, j1:null };
+      if(cu.main) n.s0 = cu.hi; else { n.s0 = cu.pos; n.j0 = { to:cu.id, mode:'clip' }; }
+      add.push(n); cur = n;
+    });
+    cur.s1 = endS; cur.j1 = endJ;
+  });
+  add.forEach(n => sk.items.push(n));
 }
 // Uçları dik parçalara bağla (köşe ve T birleşim); bağlanamazsa Çizim sayfasındaki MDF'nin yüzüne daya
 function skJoinAll(tol){
@@ -4512,6 +4863,7 @@ function skDrawLayer(){
   skMarkerBoxes = [];
   ctx.font = '600 12px -apple-system, sans-serif'; ctx.textBaseline = 'middle';
   const marker = (x, y, txt, ok, imp, item, kind) => {
+    if(skDims === 'off' || (skDims === 'todo' && (ok || imp))) return;
     const w = ctx.measureText(txt).width + 14, h = 22;
     const bx = x - w / 2, by = y - h / 2;
     ctx.fillStyle = 'rgba(16,18,20,0.92)';
@@ -4668,6 +5020,41 @@ function skImportFromDraw(){
   showToast(src.length + ' parça Elle Çiz sayfasına alındı. Ölçülere dokunup değiştirebilirsin.', 3500);
 }
 
+// --- Silgi ve temizle ---
+let skErase = false, skEraseBtn = null;
+function skClearAll(){
+  if(!sk.items.length && !sk.strokes.length && !sk.pins.length){ showToast('Elle Çiz sayfası zaten boş'); return; }
+  if(!confirm('Elle Çiz sayfasındaki her şey silinsin mi? (Geri ile geri alınabilir)')) return;
+  skPush(); sk.strokes = []; sk.items = []; sk.pins = []; skSave(); render();
+  showToast('Elle Çiz sayfası temizlendi');
+}
+function skDistSeg(p, a, b){
+  const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy;
+  let t = L2 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2 : 0; t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+// Dokunulan yerdeki parçayı / ham çizgiyi / kırmızı noktayı siler. true: bir şey silindi
+function skEraseAt(w){
+  const tol = Math.max(16, SNAP_SENS_PX[snapSens] || 30) / scale;
+  for(let i = sk.strokes.length - 1; i >= 0; i--){
+    const pts = sk.strokes[i].pts;
+    for(let k = 0; k < pts.length - 1; k++) if(skDistSeg(w, pts[k], pts[k + 1]) < tol){ skPush(); sk.strokes.splice(i, 1); return true; }
+  }
+  for(let i = sk.pins.length - 1; i >= 0; i--) if(Math.hypot(w.x - sk.pins[i].x, w.y - sk.pins[i].y) < tol){ skPush(); sk.pins.splice(i, 1); return true; }
+  for(let i = sk.items.length - 1; i >= 0; i--){
+    const it = sk.items[i]; let hit;
+    if(it.dir === 'd') hit = skDistSeg(w, it.a, it.b) < tol;
+    else { const r = skRect(it); hit = w.x >= Math.min(r.x0, r.x1) - tol && w.x <= Math.max(r.x0, r.x1) + tol && w.y >= Math.min(r.y0, r.y1) - tol && w.y <= Math.max(r.y0, r.y1) + tol; }
+    if(!hit) continue;
+    skPush();
+    // bu parçaya bağlı uçlar serbest kalsın (bulundukları yerde)
+    sk.items.forEach(o => { if(o === it || o.dir === 'd') return; [0, 1].forEach(k => { const j = k ? o.j1 : o.j0; if(j && j.to === it.id){ const v = skEnd(o, k); if(k){ o.s1 = v; o.j1 = null; } else { o.s0 = v; o.j0 = null; } } }); });
+    sk.items.splice(i, 1);
+    return true;
+  }
+  return false;
+}
+
 // --- Sayfa geçişi, alt sekmeler, menü ---
 let skOverlay = null;
 function skSetPage(p){
@@ -4693,6 +5080,14 @@ function skBuildUI(){
   mk('✍️ Elle Çiz', '', () => skSetPage('sketch'), 'sketch');
   const sp = document.createElement('div'); sp.style.flex = '1'; tabs.appendChild(sp);
   mk('↩ Geri', 'pt-sk', skUndo);
+  skEraseBtn = mk('🧽 Sil', 'pt-sk', () => { skErase = !skErase; skEraseBtn.classList.toggle('on', skErase); showToast(skErase ? 'Silgi açık: silmek istediğin parçaya ya da çizgiye dokun / üstünden geç' : 'Silgi kapalı', 2500); });
+  mk('🗑 Temizle', 'pt-sk', skClearAll);
+  const dimBtn = mk(SK_DIMS_LBL[skDims] || SK_DIMS_LBL.all, 'pt-sk', () => {
+    skDims = skDims === 'all' ? 'todo' : skDims === 'todo' ? 'off' : 'all';
+    try{ localStorage.setItem('cizgi_sketch_dims', skDims); }catch(e){}
+    dimBtn.textContent = SK_DIMS_LBL[skDims]; dimBtn.classList.toggle('on', skDims !== 'all'); render();
+  });
+  dimBtn.classList.toggle('on', skDims !== 'all');
   mk('✨ Düzelt', 'pt-sk', skFix);
   mk('➡️ Çizim sayfasına gönder', 'pt-sk ptb-main', skSendToDraw);
   mk('⬅️ Elle Çiz sayfasına gönder', 'pt-dr', skImportFromDraw);
@@ -4719,7 +5114,8 @@ function skBuildUI(){
           skPush(); sk.topOver = !sk.topOver; skRoles(skTolW()); skSave(); render();
           el.querySelector('.ic').textContent = sk.topOver ? '☑' : '☐';
         } },
-      { icon:'🧹', label:'Elle çizimi temizle', onClick:() => { if(!sk.items.length && !sk.strokes.length) return; if(confirm('Elle Çiz sayfasındaki her şey silinsin mi?')){ skPush(); sk.strokes = []; sk.items = []; sk.pins = []; skSave(); render(); } } },
+      { icon:'🧹', label:'Elle çizimi temizle', onClick:skClearAll },
+      { icon:'📐', label:'Ekran ölçü ayarı (gerçek 1 cm)', onClick: openScreenCalib },
     ]);
   });
   // Elle Çiz sayfasında üstteki "Geri Al" elle çizimi geri alsın
@@ -4730,7 +5126,7 @@ function skBuildUI(){
   const ov = document.createElement('div');
   ov.style.cssText = 'position:absolute;inset:0;z-index:22;touch-action:none;display:none;';
   wrap.appendChild(ov); skOverlay = ov;
-  const ptrs = new Map(); let pinch = null, panPt = null, holdT = null;
+  const ptrs = new Map(); let pinch = null, panPt = null, holdT = null, skErasing = false;
   const lp = e => { const r = wrap.getBoundingClientRect(); return { x:e.clientX - r.left, y:e.clientY - r.top }; };
   const nearestRefPoint = (sp) => {
     const tolPx = Math.max(40, SNAP_SENS_PX[snapSens] || 30); let best = null, bd = Infinity;
@@ -4757,6 +5153,7 @@ function skBuildUI(){
     const mk = skMarkerBoxes.find(b => p.x >= b.x0 && p.x <= b.x1 && p.y >= b.y0 && p.y <= b.y1);
     if(mk){ ptrs.delete(e.pointerId); try{ ov.releasePointerCapture(e.pointerId); }catch(_){} skEditMarker(mk); return; }
     const w = screenToWorld(p);
+    if(skErase){ skErasing = true; if(skEraseAt(w)){ skSave(); render(); } return; }
     skCur = { pts:[{ x:w.x, y:w.y }], start:p, moved:false, eps:10 / scale, minLen:15 / scale };
     // köşeye basılı tut (0,5 sn): referans al, kenar boyunca çek, bırak → "köşeden kaç cm?"
     clearTimeout(holdT);
@@ -4782,6 +5179,7 @@ function skBuildUI(){
       scale = ns; offX = m2.x - wm.x * ns; offY = m2.y - wm.y * ns; render(); return;
     }
     if(panPt){ offX += p.x - panPt.x; offY += p.y - panPt.y; panPt = p; render(); return; }
+    if(skErasing){ if(skEraseAt(screenToWorld(p))){ skSave(); render(); } return; }
     if(!skCur) return;
     if(Math.hypot(p.x - skCur.start.x, p.y - skCur.start.y) > 8) skCur.moved = true;
     const w = screenToWorld(p);
@@ -4795,6 +5193,7 @@ function skBuildUI(){
     clearTimeout(holdT);
     if(pinch){ if(ptrs.size < 2) pinch = null; return; }
     if(panPt){ panPt = null; return; }
+    if(skErasing){ skErasing = false; return; }
     const cur = skCur; skCur = null;
     if(!cur){ render(); return; }
     if(cur.refMode){
@@ -4830,6 +5229,290 @@ function skBuildUI(){
 skBuildUI();
 skSetPage('draw');
 
+
+// ================= v16.21: ÖLÇÜ MENÜSÜ, AÇIKLAMA, DOKUNMATİK ÇUBUK, OFSET, LİSTEYE DÖN, DOSYA SEÇİCİ =================
+// ---- Ölçü menüsü: Ölç + 3 çeşit ölçüyü göster/gizle ----
+function toggleDimDesign(sh){
+  pushHistory();
+  if(sh.design) delete sh.design; else sh.design = true;
+  autosave(); render();
+  showToast(sh.design ? 'Tasarım ölçüsü yapıldı (turuncu, 3D\'de görünecek)' : 'Normal ölçü yapıldı', 2200);
+}
+function openDimMenu(anchor){
+  const chk = (k, text) => ({
+    icon: dimShow[k] ? '☑' : '☐', label: text, active: dimShow[k], keepOpen: true,
+    onClick: (b) => { setDimShow(k, !dimShow[k]); b.querySelector('.ic').textContent = dimShow[k] ? '☑' : '☐'; b.classList.toggle('active', dimShow[k]); }
+  });
+  openMenu(anchor, [
+    { icon:'📏', label:'Ölç', active: tool==='dim' && !dimDesignNext, onClick: () => { setTool('dim'); } },
+    { icon:'🟧', label:'Tasarım ölçüsü koy', active: tool==='dim' && dimDesignNext, onClick: () => { setTool('dim'); dimDesignNext = true; showToast('Tasarım ölçüsü: 2 noktaya dokun, sonra yerini göster. 3D\'de de görünür', 3500); } },
+    { icon:'🔁', label:'Ölçüyü tasarım ↔ normal yap', onClick: () => {
+        const sel = shapes.filter(x => x.type === 'dim' && selectedShapes.has(x.id));
+        if(sel.length){ pushHistory(); const to = !sel[0].design; sel.forEach(x => { if(to) x.design = true; else delete x.design; }); autosave(); render(); showToast(sel.length + ' ölçü ' + (to ? 'tasarım ölçüsü' : 'normal ölçü') + ' yapıldı'); return; }
+        dimDesignPick = true; render(); showToast('Değiştirmek istediğin ölçüye dokun (bitince Vazgeç)', 3500);
+    } },
+    chk('auto', 'Çizim ölçüleri (otomatik)'),
+    chk('tool', 'Ölçü aracı ölçüleri'),
+    chk('design', 'Tasarım ölçüleri (turuncu)'),
+  ]);
+}
+updateHideDimsButton();
+
+// ---- "?" : İsim / Açıklama penceresi (tablet ve kalem için büyük) ----
+function openNoteEditor(key){
+  const id = parseInt(String(key), 10);
+  const sh = shapes.find(x => x.id === id);
+  if(!sh){ return; }
+  closeLabelEditor();
+  const m = csvModalBase('İsim / Açıklama');
+  const mk = (txt) => { const l = document.createElement('div'); l.textContent = txt; l.style.cssText = 'font-size:14px;color:#cfd3d8;margin:6px 0 4px;'; return l; };
+  const inName = document.createElement('input');
+  inName.type = 'text'; inName.value = sh.label || ''; inName.placeholder = sh.type === 'mdf' ? 'örn: Yan Dikme' : 'isim';
+  const inNote = document.createElement('textarea');
+  inNote.rows = 3; inNote.value = sh.note || ''; inNote.placeholder = 'Açıklama yaz (kalemle de yazabilirsin)';
+  [inName, inNote].forEach(el => el.style.cssText = 'width:100%;box-sizing:border-box;font-size:18px;padding:10px;border-radius:8px;border:1px solid #3a3d42;background:#101214;color:#e8e8e8;font-family:inherit;');
+  const info = document.createElement('div');
+  info.style.cssText = 'font-size:12px;color:#9aa0a6;margin-top:6px;';
+  info.textContent = (sh.type === 'mdf' ? 'MDF parça' : sh.type === 'dim' ? 'Ölçü' : 'Çizgi') + (sh.points && sh.points.length >= 2 ? ' · ' + fmtLen(sh.points[0].distanceTo(sh.points[1])) : '') + ' · İsim ve açıklama kesim listesinde (Excel) görünür.';
+  m.body.append(mk('İsim'), inName, mk('Açıklama'), inNote, info);
+  m.foot.append(
+    csvBtn('İptal', () => m.close()),
+    csvBtn('Kaydet', () => {
+      const nl = inName.value.trim(), nn = inNote.value.trim();
+      if(nl !== (sh.label || '') || nn !== (sh.note || '')){ pushHistory(); sh.label = nl; sh.note = nn; autosave(); }
+      m.close(); render(); showToast('Kaydedildi');
+    }, true)
+  );
+  setTimeout(() => { try{ inName.focus(); }catch(e){} }, 50);
+}
+
+// ---- Kesim listesinden "Göster" deyince listeye geri dönüş düğmesi ----
+function hideBackToList(){ const b = document.getElementById('backToList'); if(b) b.remove(); }
+function showBackToList(depthMm){
+  hideBackToList();
+  const b = document.createElement('div');
+  b.id = 'backToList';
+  b.innerHTML = '<button type="button" class="btl-go">⬅ Kesim listesine dön</button><button type="button" class="btl-x" title="Kapat">✕</button>';
+  ['pointerdown','pointerup','pointermove','click','dblclick'].forEach(ev => b.addEventListener(ev, e => e.stopPropagation()));
+  b.querySelector('.btl-go').addEventListener('click', () => { hideBackToList(); openCsvPreview(depthMm); });
+  b.querySelector('.btl-x').addEventListener('click', hideBackToList);
+  wrap.appendChild(b);
+}
+
+// ---- Dosya dışarı aktarma: Paylaş / Farklı kaydet / İndirilenler ----
+function exportMime(name){
+  const n = String(name).toLowerCase();
+  if(n.endsWith('.csv')) return { mime:'text/csv', ext:'.csv', desc:'Excel / CSV' };
+  if(n.endsWith('.pdf')) return { mime:'application/pdf', ext:'.pdf', desc:'PDF' };
+  if(n.endsWith('.png')) return { mime:'image/png', ext:'.png', desc:'Resim' };
+  if(n.endsWith('.html')) return { mime:'text/html', ext:'.html', desc:'Web sayfası' };
+  if(n.endsWith('.cizgi')) return { mime:'application/octet-stream', ext:'.cizgi', desc:'Çizgi CAD çizimi' };
+  return { mime:'application/octet-stream', ext:'', desc:'Dosya' };
+}
+function savePickerFn(){
+  try{ if(window.showSaveFilePicker) return { fn: window.showSaveFilePicker, owner: window }; }catch(e){}
+  try{ if(window.parent && window.parent !== window && window.parent.showSaveFilePicker) return { fn: window.parent.showSaveFilePicker, owner: window.parent }; }catch(e){}
+  return null;
+}
+function canSaveAs(){
+  if(window.__appSaveBlob) return !!(window.AndroidBridge && window.AndroidBridge.saveAs);
+  return !!savePickerFn();
+}
+function shareFileObj(blob, name){
+  try{ return new File([blob], name, { type: exportMime(name).mime }); }catch(e){ return null; }
+}
+function canShareFile(blob, name){
+  if(window.__appSaveBlob) return true;
+  const f = shareFileObj(blob, name);
+  try{ return !!(f && navigator.canShare && navigator.canShare({ files:[f] })); }catch(e){ return false; }
+}
+function exportShare(blob, name){
+  if(window.__appSaveBlob){ window.__appSaveBlob(blob, name, 'share'); return; }
+  const f = shareFileObj(blob, name);
+  navigator.share({ files:[f], title:name }).catch(err => { if(err && err.name !== 'AbortError') showToast('Paylaşılamadı: ' + (err.message || ''), 3000); });
+}
+function exportSaveAs(blob, name){
+  if(window.__appSaveBlob){
+    if(window.AndroidBridge && window.AndroidBridge.saveAs){ window.__appSaveBlob(blob, name, 'saveas'); return; }
+    window.__appSaveBlob(blob, name, 'save'); return;
+  }
+  const pk = savePickerFn();
+  if(!pk){ deliverDownload(blob, name); showToast('Bu tarayıcı yer seçtirmiyor; İndirilenler klasörüne kaydedildi', 3500); return; }
+  const mt = exportMime(name);
+  const opts = { suggestedName: name };
+  if(mt.ext){ const acc = {}; acc[mt.mime] = [mt.ext]; opts.types = [{ description: mt.desc, accept: acc }]; }
+  pk.fn.call(pk.owner, opts)
+    .then(h => h.createWritable())
+    .then(w => w.write(blob).then(() => w.close()))
+    .then(() => showToast('Kaydedildi: ' + name, 3000))
+    .catch(err => {
+      if(err && err.name === 'AbortError') return;
+      deliverDownload(blob, name); showToast('Yer seçilemedi; İndirilenler klasörüne kaydedildi', 3500);
+    });
+}
+function openExportChooser(blob, name, title){
+  const m = csvModalBase('Dışarı aktar · ' + (title || name));
+  const info = document.createElement('div');
+  info.style.cssText = 'font-size:13px;color:#cfd3d8;margin-bottom:10px;word-break:break-all;';
+  info.textContent = name + ' · ' + Math.max(1, Math.round(blob.size/1024)) + ' KB';
+  m.body.appendChild(info);
+  const big = (icon, text, sub, fn, primary) => {
+    const b = csvBtn('', () => { m.close(); fn(); }, primary);
+    b.style.cssText += ';display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 14px;margin-bottom:8px;font-size:16px;';
+    b.innerHTML = '<span style="font-size:24px;">' + icon + '</span><span><b>' + text + '</b><br><span style="font-size:12px;font-weight:400;opacity:.8;">' + sub + '</span></span>';
+    m.body.appendChild(b);
+    return b;
+  };
+  if(canShareFile(blob, name)) big('📤', 'Paylaş', 'WhatsApp, e-posta, Drive... nereye istersen', () => exportShare(blob, name), true);
+  if(canSaveAs()) big('📁', 'Farklı kaydet', 'Klasörü ve adı sen seç', () => exportSaveAs(blob, name));
+  big('⬇️', 'İndirilenler\'e kaydet', window.__appSaveBlob ? 'İndirilenler / MobilyaCAD klasörü' : 'Tarayıcının İndirilenler klasörü', () => { deliverDownload(blob, name); if(!window.__appSaveBlob) showToast('Kaydedildi: İndirilenler / ' + name, 3500); });
+  m.foot.append(csvBtn('Kapat', () => m.close()));
+}
+
+// ---- Dokunmatik çubuk (tablet / telefon): Vazgeç, Ortadan, Karşıya, Ofset, Ölçü yaz ----
+const TB_KEY = 'cizgi_touchbar';   // auto | on | off  (bu cihazda kalır)
+function tbSetting(){ try{ return localStorage.getItem(TB_KEY) || 'auto'; }catch(e){ return 'auto'; } }
+function tbWanted(){
+  const v = tbSetting();
+  if(v === 'on') return true;
+  if(v === 'off') return false;
+  try{ return matchMedia('(pointer:coarse)').matches; }catch(e){ return false; }
+}
+const tbCss = document.createElement('style');
+tbCss.textContent = `
+  #touchBar{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);z-index:36;display:none;gap:4px;padding:4px;
+    background:rgba(16,18,20,.92);border:1px solid var(--line);border-radius:14px;box-shadow:0 4px 16px rgba(0,0,0,.5);touch-action:none;}
+  #touchBar.show{display:flex;}
+  #touchBar button, #touchKeys button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:10px;
+    min-width:52px;height:46px;padding:2px 6px;font-size:18px;line-height:1.05;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;touch-action:manipulation;}
+  #touchBar button small{font-size:10px;font-weight:600;opacity:.85;margin-top:2px;}
+  #touchBar button.on{background:var(--accent);color:#0d1117;border-color:var(--accent);}
+  #touchBar button.esc{color:#ff8a80;border-color:#ff8a80;}
+  #touchKeys{position:absolute;left:50%;bottom:66px;transform:translateX(-50%);z-index:37;display:none;padding:6px;width:236px;
+    background:rgba(16,18,20,.96);border:1px solid var(--accent2);border-radius:14px;box-shadow:0 4px 16px rgba(0,0,0,.6);touch-action:none;}
+  #touchKeys.show{display:block;}
+  #touchKeys .tk-h{font-size:12px;color:#cfd3d8;text-align:center;margin:2px 0 4px;}
+  #touchKeys .tk-v{font-size:22px;font-weight:700;color:var(--accent2);text-align:center;margin-bottom:6px;min-height:28px;}
+  #touchKeys .tk-g{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;}
+  #touchKeys button{min-width:0;font-size:20px;font-weight:600;}
+  #touchKeys button.dir{color:var(--accent2);}
+  #touchKeys button.ok{grid-column:span 4;background:var(--accent2);color:#1b1d1f;border-color:var(--accent2);font-size:17px;}
+  #backToList{position:absolute;left:10px;bottom:66px;z-index:36;display:flex;gap:4px;}
+  #backToList button{background:#ffb454;color:#1b1d1f;border:none;border-radius:10px;padding:10px 14px;font-size:15px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,.5);cursor:pointer;}
+  #backToList .btl-x{background:var(--panel2);color:var(--ink);border:1px solid var(--line);padding:10px 12px;}
+`;
+document.head.appendChild(tbCss);
+const touchBar = document.createElement('div');
+touchBar.id = 'touchBar';
+touchBar.innerHTML =
+  '<button type="button" class="esc" data-a="esc">✕<small>Vazgeç</small></button>' +
+  '<button type="button" data-a="center">⊟<small>Ortadan</small></button>' +
+  '<button type="button" data-a="close">⇥<small>Karşıya</small></button>' +
+  '<button type="button" data-a="offset">⌖<small>Ofset</small></button>' +
+  '<button type="button" data-a="keys">123<small>Ölçü yaz</small></button>';
+const touchKeys = document.createElement('div');
+touchKeys.id = 'touchKeys';
+touchKeys.innerHTML = '<div class="tk-h">Ölçü (cm)</div><div class="tk-v"></div><div class="tk-g">' +
+  ['7','8','9','⌫','4','5','6','↑','1','2','3','↓',',','0','←','→'].map(k => '<button type="button" class="' + ('↑↓←→'.includes(k) ? 'dir' : '') + '" data-k="' + k + '">' + k + '</button>').join('') +
+  '<button type="button" class="ok" data-k="ok">Tamam</button></div>';
+[touchBar, touchKeys].forEach(el => {
+  ['pointerdown','pointerup','pointermove','pointercancel','click','dblclick','contextmenu','wheel'].forEach(ev => el.addEventListener(ev, e => { e.stopPropagation(); if(ev === 'contextmenu') e.preventDefault(); }, { passive: ev !== 'contextmenu' && ev !== 'wheel' ? true : false }));
+});
+wrap.appendChild(touchBar);
+wrap.appendChild(touchKeys);
+let tkOpen = false;
+function tkSetOpen(v){ tkOpen = !!v; tbRefresh(); }
+function tbCancelExtras(){ offsetPick = null; dimDesignPick = false; tkOpen = false; tbRefresh(); }
+function tbRefresh(){
+  const page = (typeof skPage === 'undefined') ? 'draw' : skPage;
+  const show = tbWanted() && page !== 'sketch';
+  touchBar.classList.toggle('show', show);
+  touchKeys.classList.toggle('show', show && tkOpen);
+  const q = a => touchBar.querySelector('[data-a="' + a + '"]');
+  q('center').classList.toggle('on', !!mdfCenter);
+  q('offset').classList.toggle('on', !!offsetPick);
+  q('keys').classList.toggle('on', tkOpen);
+  if(show && tkOpen){
+    touchKeys.querySelector('.tk-h').textContent = offsetPick && offsetPick.stage === 'dist' ? 'Ofset mesafe (cm) · sonra yön oku' : (drawing ? 'Uzunluk (cm) · sonra yön oku veya Tamam' : 'Önce başlangıç noktasına dokun');
+    touchKeys.querySelector('.tk-v').textContent = directTypedLength ? directTypedLength + ' cm' : '—';
+  }
+}
+function tbDirCommit(d){
+  const mm = parseCmInputToMm(directTypedLength);
+  if(isNaN(mm) || mm <= 0){ showToast('Önce ölçüyü yaz (örn: 60 veya 60,5)', 2500); return; }
+  if(offsetPick && offsetPick.stage === 'dist'){
+    const r = offsetPick.ref;
+    const start = new Point(r.x + d.x*mm, r.y + d.y*mm);
+    offsetPick = null; resetDirectInput();
+    handleDrawTap(start);
+    showToast('Başlangıç noktası kondu (' + fmtLen(mm) + ' ofset). Şimdi uzunluğu yaz veya çiz', 3500);
+    tbRefresh(); return;
+  }
+  if(!drawing || !drawing.points.length){ showToast('Önce başlangıç noktasına dokun', 2500); return; }
+  const p0 = drawing.points[drawing.points.length-1];
+  const target = new Point(p0.x + d.x*mm, p0.y + d.y*mm);
+  liveWorld = target;
+  resetDirectInput();
+  handleDrawTap(target);
+  tbRefresh();
+}
+touchBar.addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b) return;
+  const a = b.dataset.a;
+  if(a === 'esc'){ cancelCurrentAction(); showToast('Vazgeçildi', 1200); }
+  else if(a === 'center'){ setMdfCenter(!mdfCenter); }
+  else if(a === 'close'){ closeToOpposite(); }
+  else if(a === 'offset'){
+    if(offsetPick){ offsetPick = null; resetDirectInput(); render(); return; }
+    if(!['line','mdf','polyline','rect'].includes(tool)){ showToast('Ofset için önce MDF veya Çizgi aracını seç', 3000); return; }
+    drawing = null; liveWorld = null; snapResult = null; resetDirectInput();
+    offsetPick = { stage:'ref' };
+    showToast('Ofset: referans noktaya (köşe / uç) dokun', 3500);
+    render();
+  }
+  else if(a === 'keys'){ tkSetOpen(!tkOpen); }
+  tbRefresh();
+});
+touchKeys.addEventListener('click', e => {
+  const b = e.target.closest('button'); if(!b) return;
+  const k = b.dataset.k;
+  if(/^[0-9]$/.test(k) || k === ','){ directTypedLength += k; updateDirectInputUI(); }
+  else if(k === '⌫'){ directTypedLength = directTypedLength.slice(0, -1); if(directTypedLength) updateDirectInputUI(); else if(!drawing) directInputBox.style.display = 'none'; else updateDirectInputUI(); }
+  else if(k === '→') tbDirCommit({ x:1, y:0 });
+  else if(k === '←') tbDirCommit({ x:-1, y:0 });
+  else if(k === '↑') tbDirCommit({ x:0, y:-1 });
+  else if(k === '↓') tbDirCommit({ x:0, y:1 });
+  else if(k === 'ok'){
+    if(offsetPick && offsetPick.stage === 'dist'){ showToast('Ofsetin yönünü seç: ← ↑ ↓ →', 2500); }
+    else if(directTypedLength && drawing && liveWorld && drawing.points[0].distanceTo(liveWorld) > 0.5){ commitDirectTypedLength(); }
+    else if(directTypedLength && drawing){ showToast('Yön okuna bas: ← ↑ ↓ →', 2500); }
+    else if(drawing && drawing.type === 'polyline'){ finishPolyline(); }
+    else if(!directTypedLength){ tkSetOpen(false); }
+  }
+  tbRefresh();
+});
+function offsetPickRef(pt){
+  offsetPick = { stage:'dist', ref: new Point(pt.x, pt.y) };
+  directTypedLength = '';
+  directInputLabel.textContent = 'Ofset Mesafe:'; directInputVal.textContent = '— yaz, sonra yön';
+  directInputBox.style.display = 'block';
+  tkOpen = true;
+  showToast('Mesafeyi yaz, sonra yön okuna bas (← ↑ ↓ →)', 3500);
+  render();
+}
+function drawOffsetRef(){
+  tbRefresh();
+  if(!offsetPick || !offsetPick.ref) return;
+  const sp = worldToScreen(offsetPick.ref);
+  ctx.save();
+  ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(sp.x, sp.y, 9, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(sp.x-14, sp.y); ctx.lineTo(sp.x+14, sp.y); ctx.moveTo(sp.x, sp.y-14); ctx.lineTo(sp.x, sp.y+14); ctx.stroke();
+  ctx.restore();
+}
+try{ matchMedia('(pointer:coarse)').addEventListener('change', tbRefresh); }catch(e){}
+tbRefresh();
+
 // ================= ÜST MENÜ: TABLET / TELEFON İÇİN GRUPLAMA =================
 // Menü ekrana sığmazsa tek duran düğmeler gruplara toplanır. Asıl düğmeler gizlenir ama aynen çalışır
 // (gruptaki seçenek, gizli asıl düğmeye basar). Geniş ekranda (bilgisayar) eski düzen aynen kalır.
@@ -4854,7 +5537,7 @@ skSetPage('draw');
         { id:'btnPanOnly',  icon:'🖐', label:()=>'Gezin (sadece kaydır)' },
         { id:'btnSnapMenu', icon:'⚙️', label:()=>'Snap Menü', menu:true },
     ]},
-    { id:'cgDim', icon:'📏', label:'Ölçü', after:'cgHelp', items:[
+    { id:'cgDim', icon:'📏', label:'Ölçü', after:'cgHelp', custom:(a)=>openDimMenu(a), items:[
         { id:'toolDim',     icon:'📏', label:()=>'Ölçü aracı' },
         { id:'btnHideDims', icon:'🙈', label:()=>lbl('btnHideDims') },
     ]},
@@ -4879,6 +5562,7 @@ skSetPage('draw');
     if(ref && ref.parentNode === bar) ref.after(b); else bar.appendChild(b);
     b.addEventListener('click', function(){
       const anchor = this;
+      if(g.custom){ g.custom(anchor); setTimeout(syncGroups, 30); return; }
       openMenu(anchor, g.items.filter(it => $(it.id)).map(it => ({
         icon: it.icon, label: it.label(), active: isOn(it.id), keepOpen: !!it.menu,
         onClick: () => { pressVia(it.id, anchor); setTimeout(syncGroups, 30); }
