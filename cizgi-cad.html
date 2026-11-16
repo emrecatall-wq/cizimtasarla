@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Çizgi CAD v16.41 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
+<title>Çizgi CAD v16.43 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1d1f">
 <meta name="mobile-web-app-capable" content="yes">
@@ -175,7 +175,7 @@
     <span id="stMode">Mod: MDF</span>
     <span id="stCoord">X:0 Y:0 cm</span>
     <span id="stZoom">Ölçek: 100%</span>
-    <span id="stVer" style="color:#ffb454;font-weight:700;">v16.41</span>
+    <span id="stVer" style="color:#ffb454;font-weight:700;">v16.43</span>
     <span id="stProj" style="color:#9fd3ff;font-weight:700;display:none;"></span>
     <span id="stInfo"></span>
   </div>
@@ -334,6 +334,8 @@ function showDimOffset(){
 let snapResult = null;
 let hoverTrackPoint = null;
 let trackedPoints = [];
+// v16.42: izleme kilidi — köşeden hizalanıp çıkınca o köşe referans kalır; yol üstündeki başka köşeler araya girmez
+let trackLock = null;
 
 let selectedShapes = new Set();
 let contextMenuTarget = null;
@@ -544,7 +546,9 @@ function addTrackedPoint(p){
 }
 function clearTrackedPoints(){
   trackedPoints = [];
+  trackLock = null;
 }
+
 function feedTrackedPointsFromPoints(pts){
   for(const p of pts) addTrackedPoint(p);
 }
@@ -681,6 +685,19 @@ function computeSnap(worldPt, excludeId){
     const pr = best.point.projectToSegment(fs.guides[0], fs.guides[1]);
     if(best.point.distanceTo(pr) > 0.5) best = null;
   }
+  if(drawing) trackLock = null;
+  if(trackLock && snapSettings.tracking){
+    const tp = trackLock.tp, tolL = Math.max(16 / scale, radius) * 1.3;
+    const off = trackLock.v ? Math.abs(worldPt.x - tp.x) : Math.abs(worldPt.y - tp.y);
+    const nearBase = worldPt.distanceTo(tp) < radius;
+    if(off < tolL && !nearBase){
+      const d = trackLock.v ? worldPt.y - tp.y : worldPt.x - tp.x;
+      const dir = trackLock.v ? { x:0, y: d >= 0 ? 1 : -1 } : { x: d >= 0 ? 1 : -1, y:0 };
+      const pt = trackLock.v ? new Point(tp.x, worldPt.y) : new Point(worldPt.x, tp.y);
+      return { point: pt, marker: 'track', guides: [tp], trackBase: tp, trackDir: dir, trackDist: Math.abs(d) };
+    }
+    if(!nearBase) trackLock = null;
+  }
   if(best){
     hoverTrackPoint = best.point;
     if(snapSettings.tracking && best.type === 'point'){
@@ -707,7 +724,7 @@ function computeSnap(worldPt, excludeId){
       }
     }
 
-    for(const tp of trackedPoints){
+    for(const tp of trackedPoints.slice().reverse()){
       const dx = worldPt.x - tp.x;
       const dy = worldPt.y - tp.y;
       
@@ -716,6 +733,7 @@ function computeSnap(worldPt, excludeId){
         const dir = { x: 0, y: dirY };
         const snappedPt = new Point(tp.x, worldPt.y);
         const dist = Math.abs(dy);
+        if(!drawing) trackLock = { tp, v: true };
         return { point: snappedPt, marker: 'track', guides: [tp], trackBase: tp, trackDir: dir, trackDist: dist };
       }
       
@@ -724,6 +742,7 @@ function computeSnap(worldPt, excludeId){
         const dir = { x: dirX, y: 0 };
         const snappedPt = new Point(worldPt.x, tp.y);
         const dist = Math.abs(dx);
+        if(!drawing) trackLock = { tp, v: false };
         return { point: snappedPt, marker: 'track', guides: [tp], trackBase: tp, trackDir: dir, trackDist: dist };
       }
     }
@@ -3423,7 +3442,7 @@ function openLibrary(onDone){
 // Dosyanın içinde: çizim, Elle Çiz, kapak/göz ayarları, dolap derinliği, menteşe/kesim ayarları, renk.
 // Görünüm (yakınlaştırma, kaydırma) dosyaya girmez: her cihaz kendi görünümünü korur.
 const PROJ_KEYS_OWN = ['cizgi_bays_v1','cizgi_sketch_v1','cizgi_cab_depth_v1','cizgi_door_cfg_v2','cizgi_drawers_v1','cizgi_mirror_v1'];   // projeye özel
-const PROJ_KEYS_GEN = ['cizgi_hinge_v1','cizgi_cut_settings_v1','cizgi_csv_depth','tasarla_decor_v1'];                                   // genel ayar (dosyada yoksa cihazdaki kalır)
+const PROJ_KEYS_GEN = ['cizgi_hinge_v1','cizgi_cut_settings_v1','cizgi_csv_depth','tasarla_decor_v1','tasarla_door_model_v1'];                                   // genel ayar (dosyada yoksa cihazdaki kalır)
 function projName(){ try{ return localStorage.getItem('cizgi_project_name') || ''; }catch(e){ return ''; } }
 function projSetName(n){ try{ localStorage.setItem('cizgi_project_name', n || ''); }catch(e){} projBadge(); }
 function projDevice(){ try{ return helpDevice().split(' ·')[0]; }catch(e){ return ''; } }
@@ -6633,7 +6652,7 @@ document.getElementById('btnDoors').addEventListener('click', () => setDoorMode(
 
 
 // ================= v16.33: KONTROL EKRANI — tablette çalışmayan şeyi bulmak için =================
-const APP_VER = 'v16.41';
+const APP_VER = 'v16.43';
 function openDiagnose(){
   const B = window.AndroidBridge;
   const yes = v => v ? '✅' : '❌';
