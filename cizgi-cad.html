@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Çizgi CAD v16.39 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
+<title>Çizgi CAD v16.41 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1d1f">
 <meta name="mobile-web-app-capable" content="yes">
@@ -175,7 +175,7 @@
     <span id="stMode">Mod: MDF</span>
     <span id="stCoord">X:0 Y:0 cm</span>
     <span id="stZoom">Ölçek: 100%</span>
-    <span id="stVer" style="color:#ffb454;font-weight:700;">v16.39</span>
+    <span id="stVer" style="color:#ffb454;font-weight:700;">v16.41</span>
     <span id="stProj" style="color:#9fd3ff;font-weight:700;display:none;"></span>
     <span id="stInfo"></span>
   </div>
@@ -619,8 +619,22 @@ function mdfFaceSnap(worldPt, excludeId, radius){
     for(let i = 0; i < 4; i++){
       const a = c[i], b = c[(i + 1) % 4];
       const el = a.distanceTo(b); if(el < 0.5) continue;
-      const proj = worldPt.projectToSegment(a, b), dist = worldPt.distanceTo(proj);
-      if(!inside && dist > R) continue;
+      let proj = worldPt.projectToSegment(a, b), dist = worldPt.distanceTo(proj);
+      // v16.41: çizgi yolu bu yüzü kesiyorsa (raf dikmeyi delemez) uzaklık ne olursa olsun gelen taraftaki yüzde durur
+      let cross = false;
+      if(mv && !inside && dist > R){
+        const ex = (b.x - a.x) / el, ey = (b.y - a.y) / el;
+        if(Math.abs(ex * mv.x + ey * mv.y) <= 0.35){
+          const den = mv.x * ey - mv.y * ex;
+          if(Math.abs(den) > 1e-9){
+            const wx = a.x - st.x, wy = a.y - st.y;
+            const tAlong = (wx * ey - wy * ex) / den, u = (wx * mv.y - wy * mv.x) / den;
+            const pAlong = (worldPt.x - st.x) * mv.x + (worldPt.y - st.y) * mv.y;
+            if(tAlong > 0.5 && tAlong <= pAlong && u > 1 && u < el - 1){ cross = true; proj = new Point(st.x + mv.x * tAlong, st.y + mv.y * tAlong); }
+          }
+        }
+      }
+      if(!inside && dist > R && !cross) continue;
       let score, along = null;
       if(mv){
         const ex = (b.x - a.x) / el, ey = (b.y - a.y) / el;
@@ -632,7 +646,9 @@ function mdfFaceSnap(worldPt, excludeId, radius){
         if(el < MDF_THICKNESS + 0.5 && b.distanceTo(c[(i + 2) % 4]) > el + 1) continue;   // kısa uç yüzü değil, uzun yüz
         score = Math.hypot(proj.x - ctr.x, proj.y - ctr.y);
       } else score = dist;
-      if(score < bs){ bs = score; best = { point: proj, guides:[a, b], along, dir: mv, inside: inside && !mv }; }
+      // reached: çizerken imleç yüze ulaştı ya da geçti (tahtanın üstünde / ötesinde)
+      const reached = mv ? (((worldPt.x - st.x) * mv.x + (worldPt.y - st.y) * mv.y) >= along - 0.5 || inside) : inside;
+      if(score < bs){ bs = score; best = { point: proj, guides:[a, b], along, dir: mv, inside: inside && !mv, reached }; }
     }
   });
   return best;
@@ -659,8 +675,9 @@ function computeSnap(worldPt, excludeId){
     const bAlong = (best.point.x - st.x) * fs.dir.x + (best.point.y - st.y) * fs.dir.y;
     if(fs.along < bAlong - 1) best = null;          // köşe yüzün arkasında kalıyor (dış yüz): iç yüz kazanır
   }
-  if(best && fs && fs.inside){
-    // tahtanın üstüne basıldı: köşe / orta nokta dolabın içine bakan yüzde değilse iç yüz kazanır
+  if(best && fs && fs.inside && lastPtrType !== 'mouse'){
+    // kalemle tahtanın üstüne basıldı: köşe / orta nokta dolabın içine bakan yüzde değilse iç yüz kazanır
+    // (farede köşe yakalama ve izleme bozulmasın diye uygulanmaz)
     const pr = best.point.projectToSegment(fs.guides[0], fs.guides[1]);
     if(best.point.distanceTo(pr) > 0.5) best = null;
   }
@@ -671,7 +688,8 @@ function computeSnap(worldPt, excludeId){
     }
     return { point: best.point, marker: best.type, guides: [], trackBase: null, trackDir: null, trackDist: 0 };
   }
-  if(fs) return { point: fs.point, marker: 'perp', guides: fs.guides, trackBase: null, trackDir: null, trackDist: 0 };
+  // v16.40: MDF yüzü ancak imleç yüze ulaşınca / tahtanın üstündeyken izlemenin (köşeden hizalama) önüne geçer
+  if(fs && fs.reached && !(fs.inside && lastPtrType === 'mouse')) return { point: fs.point, marker: 'perp', guides: fs.guides, trackBase: null, trackDir: null, trackDist: 0 };
 
   if(snapSettings.tracking && trackedPoints.length){
     const tol = 16 / scale;
@@ -711,6 +729,7 @@ function computeSnap(worldPt, excludeId){
     }
   }
 
+  if(fs && drawing) return { point: fs.point, marker: 'perp', guides: fs.guides, trackBase: null, trackDir: null, trackDist: 0 };
   if(snapSettings.perpendicular && drawing && drawing.points.length > 0){
     for(const s of shapes){
       if(s.id === excludeId || s.type === 'dim') continue;
@@ -6614,7 +6633,7 @@ document.getElementById('btnDoors').addEventListener('click', () => setDoorMode(
 
 
 // ================= v16.33: KONTROL EKRANI — tablette çalışmayan şeyi bulmak için =================
-const APP_VER = 'v16.39';
+const APP_VER = 'v16.41';
 function openDiagnose(){
   const B = window.AndroidBridge;
   const yes = v => v ? '✅' : '❌';
