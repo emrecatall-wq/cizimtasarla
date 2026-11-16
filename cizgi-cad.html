@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Çizgi CAD v16.37 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
+<title>Çizgi CAD v16.39 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1d1f">
 <meta name="mobile-web-app-capable" content="yes">
@@ -175,7 +175,8 @@
     <span id="stMode">Mod: MDF</span>
     <span id="stCoord">X:0 Y:0 cm</span>
     <span id="stZoom">Ölçek: 100%</span>
-    <span id="stVer" style="color:#ffb454;font-weight:700;">v16.37</span>
+    <span id="stVer" style="color:#ffb454;font-weight:700;">v16.39</span>
+    <span id="stProj" style="color:#9fd3ff;font-weight:700;display:none;"></span>
     <span id="stInfo"></span>
   </div>
 
@@ -552,12 +553,40 @@ function feedTrackedPointsFromPoints(pts){
 let lastPtrType = 'mouse';
 let snapSens = 'orta';
 try{ snapSens = localStorage.getItem('cizgi_snap_sens') || 'orta'; }catch(e){}
+// v16.38: CİHAZ AYARI (bu cihazda kalır): Otomatik / Bilgisayar / Tablet / Telefon
+// Dokunmatik ekranlı laptop "tablet" sanılabiliyor; buradan elle seçilir.
+function devMode(){ try{ return localStorage.getItem('cizgi_device_mode') || 'auto'; }catch(e){ return 'auto'; } }
+function devAutoCoarse(){ try{ return matchMedia('(pointer:coarse)').matches; }catch(e){ return false; } }
+function devCoarse(){ const m = devMode(); return m === 'auto' ? devAutoCoarse() : m !== 'pc'; }
+function devName(){
+  const m = devMode();
+  if(m === 'pc') return 'Bilgisayar'; if(m === 'tablet') return 'Tablet'; if(m === 'phone') return 'Telefon';
+  const sm = Math.min(screen.width, screen.height);
+  return devAutoCoarse() ? (sm < 600 ? 'Telefon' : 'Tablet') : 'Bilgisayar';
+}
+function openDeviceMode(){
+  const m = csvModalBase('📱 Cihaz ayarı (bu cihazda kalır)');
+  const cur = devMode();
+  const t = document.createElement('div'); t.style.cssText = 'font-size:13.5px;margin-bottom:10px;line-height:1.5;';
+  t.innerHTML = 'Uygulama bu cihazı şu an <b>' + devName() + '</b> olarak kullanıyor' + (cur === 'auto' ? ' (otomatik algılandı)' : '') + '.<br>Yanlış algılarsa buradan seç. Bu ayar sadece bu cihazı etkiler.';
+  m.body.appendChild(t);
+  [['auto','🔄 Otomatik','Cihazı kendisi algılar'],['pc','💻 Bilgisayar','Fare + klavye: ölçüyü klavyeden yaz, Enter'],['tablet','📱 Tablet','Kalem + dokunmatik: büyük yakalama, dokunmatik çubuk'],['phone','📱 Telefon','Parmak: büyük yakalama, dokunmatik çubuk']].forEach(([k, a, b]) => {
+    const btn = csvBtn('', () => {
+      try{ localStorage.setItem('cizgi_device_mode', k); }catch(e){}
+      m.close(); updateSnapPx(); try{ tbRefresh(); }catch(e){} render();
+      showToast('Cihaz: ' + devName() + (k === 'auto' ? ' (otomatik)' : ''), 2500);
+    }, k === cur);
+    btn.style.cssText += ';display:block;width:100%;text-align:left;padding:10px 12px;margin-bottom:6px;font-size:15px;';
+    btn.innerHTML = '<b>' + a + '</b>' + (k === cur ? ' ✓' : '') + '<br><span style="font-size:12px;font-weight:400;opacity:.8;">' + b + '</span>';
+    m.body.appendChild(btn);
+  });
+  m.foot.append(csvBtn('Kapat', () => m.close()));
+}
 // Ekranda gerçek 1 cm kaç piksel? (Ekran ölçü ayarı ile cihaz cihaz düzeltilir)
 function cmPx(){
   let v = NaN; try{ v = parseFloat(localStorage.getItem('cizgi_px_per_cm')); }catch(e){}
   if(v > 5) return v;
-  let coarse = false; try{ coarse = window.matchMedia('(pointer: coarse)').matches; }catch(e){}
-  return coarse ? 63 : 37.8;    // dokunmatik: 160 dpi kabulü; bilgisayar: 96 dpi
+  return devCoarse() ? 63 : 37.8;    // dokunmatik: 160 dpi kabulü; bilgisayar: 96 dpi
 }
 let SNAP_SENS_PX = {};
 function updateSnapPx(){ const c = cmPx(); SNAP_SENS_PX = { az: 0.5 * c, orta: c, cok: 1.5 * c }; }
@@ -1543,6 +1572,8 @@ function shouldPan(e){
 function localPos(e){ const r=wrap.getBoundingClientRect(); return {x:e.clientX-r.left,y:e.clientY-r.top}; }
 
 wrap.addEventListener('pointerdown', onPointerDown, {passive:false});
+// v16.38: birleşik uygulamada (Giriş/Tasarla) çizime tıklayınca klavye odağı bu sayfaya gelsin → yazılan ölçü + Enter çalışır
+wrap.addEventListener('pointerdown', () => { try{ const a = document.activeElement; if(!a || !/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)){ if(window !== window.top) window.focus(); } }catch(e){} }, true);
 wrap.addEventListener('pointermove', onPointerMove, {passive:false});
 wrap.addEventListener('pointerup', onPointerUp, {passive:false});
 wrap.addEventListener('pointercancel', onPointerUp, {passive:false});
@@ -1873,6 +1904,7 @@ window.addEventListener('keydown',(e)=>{
   if(e.key==='Escape'){ cancelCurrentAction(); }
 
   if((e.ctrlKey || e.metaKey) && e.key==='z' && !e.shiftKey){ undo(); }
+  if((e.ctrlKey || e.metaKey) && (e.key==='s' || e.key==='S')){ e.preventDefault(); saveToFile(); }
   if((e.ctrlKey || e.metaKey) && (e.key==='y' || e.key==='Y' || (e.shiftKey && (e.key==='z' || e.key==='Z')))){ e.preventDefault(); redo(); }
   if(!e.ctrlKey && !e.metaKey && !e.altKey){
     if(e.key==='c' || e.key==='C'){ e.preventDefault(); closeToOpposite(); return; }
@@ -2035,7 +2067,7 @@ function pasteClipboard(){
 
 function hitTestLabel(lp){
   // parmak/kalem için kutunun çevresi biraz genişletilir
-  const pad = (window.matchMedia && matchMedia('(pointer:coarse)').matches) ? 6 : 0;
+  const pad = devCoarse() ? 6 : 0;
   for(const h of labelHitboxes) if(lp.x>=h.x-pad && lp.x<=h.x+h.w+pad && lp.y>=h.y-pad && lp.y<=h.y+h.h+pad){
     return Object.assign({}, h, { q: lp.x <= h.x + 22 });   // q: "?" düğmesine basıldı
   }
@@ -2541,6 +2573,7 @@ document.getElementById('btnSnapMenu').addEventListener('click', function(){
 document.getElementById('grpView').addEventListener('click', function(){
   openMenu(this, [
     {icon:'⛶', label:'Sığdır', onClick:fitToView},
+    {icon:'📱', label:'Cihaz: <b>' + devName() + '</b>' + (devMode() === 'auto' ? ' (otomatik)' : '') + ' — değiştir', onClick:openDeviceMode},
     {icon: lineOnly?'▦':'╱', label: lineOnly?'MDF Parçalarını Göster':'Sadece Çizgileri Göster (MDF gizle)', onClick:()=>setLineOnly(!lineOnly)},
     {icon:'＋', label:'Yakınlaştır', keepOpen:true, onClick:()=>{ const r=wrap.getBoundingClientRect(); zoomAt({x:r.width/2,y:r.height/2},1.25); }},
     {icon:'－', label:'Uzaklaştır', keepOpen:true, onClick:()=>{ const r=wrap.getBoundingClientRect(); zoomAt({x:r.width/2,y:r.height/2},0.8); }},
@@ -2554,8 +2587,8 @@ document.getElementById('grpView').addEventListener('click', function(){
 
 document.getElementById('grpFile').addEventListener('click', function(){
   openMenu(this, [
-    {icon:'💾', label:'Kaydet (dosya olarak)', onClick:saveToFile},
-    {icon:'📂', label:'Aç (dosyadan)', onClick:openFromFile},
+    {icon:'💾', label:'<b>Proje kaydet</b> (bilgisayar ↔ tablet)' + (projName() ? ' · ' + projName() : ''), onClick:saveToFile},
+    {icon:'📂', label:'<b>Proje aç</b> (.cizgi dosyası)', onClick:openFromFile},
     {icon:'📊', label:'MDF Kesim Listesi Aktar (.csv)', onClick:exportMdfCsv},
     {icon:'⚙️', label:'Excel Sütun Ayarları', onClick:()=>openCsvColumnSettings()},
     {icon:'🛠️', label:'Kesim Ayarları (kapak / arkalık)', onClick:()=>openCutSettings()},
@@ -2563,7 +2596,7 @@ document.getElementById('grpFile').addEventListener('click', function(){
     {icon:'🗎', label:'Yeni', onClick:()=>{
       if(shapes.length && !confirm('Yeni çizim başlatılsın mı? Kaydedilmemiş değişiklikler kaybolur.')) return;
       pushHistory();
-      shapes=[]; drawing=null; selectedShapes=new Set(); offX=40; offY=40; scale=3; autosave(); render();
+      shapes=[]; drawing=null; selectedShapes=new Set(); offX=40; offY=40; scale=3; projSetName(''); autosave(); render();
     }},
     {icon:'📄', label:'PDF dışa aktar (alan seç)', onClick:startPdfWindow},
     {icon:'🚀', label:"Tasarla'ya Gönder", onClick:sendToTasarla},
@@ -3367,21 +3400,52 @@ function openLibrary(onDone){
 }
 
 // ---------- DOSYA KAYDET / AÇ (.cizgi) ----------
+// ===== v16.38: PROJE DOSYASI (bilgisayar ↔ tablet) =====
+// Dosyanın içinde: çizim, Elle Çiz, kapak/göz ayarları, dolap derinliği, menteşe/kesim ayarları, renk.
+// Görünüm (yakınlaştırma, kaydırma) dosyaya girmez: her cihaz kendi görünümünü korur.
+const PROJ_KEYS_OWN = ['cizgi_bays_v1','cizgi_sketch_v1','cizgi_cab_depth_v1','cizgi_door_cfg_v2','cizgi_drawers_v1','cizgi_mirror_v1'];   // projeye özel
+const PROJ_KEYS_GEN = ['cizgi_hinge_v1','cizgi_cut_settings_v1','cizgi_csv_depth','tasarla_decor_v1'];                                   // genel ayar (dosyada yoksa cihazdaki kalır)
+function projName(){ try{ return localStorage.getItem('cizgi_project_name') || ''; }catch(e){ return ''; } }
+function projSetName(n){ try{ localStorage.setItem('cizgi_project_name', n || ''); }catch(e){} projBadge(); }
+function projDevice(){ try{ return helpDevice().split(' ·')[0]; }catch(e){ return ''; } }
+function projBadge(){
+  const el = document.getElementById('stProj'); if(!el) return;
+  const n = projName(); el.textContent = n ? '📁 ' + n : ''; el.style.display = n ? '' : 'none';
+}
 function saveToFile(){
-  save(false);
-  const data = {
-    format: 'cizgi-cad', version: 1, savedAt: new Date().toISOString(),
-    shapes: shapes.map(sh => Object.assign({}, sh, {
-      points: sh.points.map(q=>({x:q.x,y:q.y})),
-      rawCursor: sh.rawCursor ? {x:sh.rawCursor.x, y:sh.rawCursor.y} : undefined
-    })),
-    nextId, scale, offX, offY,
-    photo: bgPhoto ? { dataUrl:bgPhoto.dataUrl, x:bgPhoto.x, y:bgPhoto.y, w:bgPhoto.w, h:bgPhoto.h, alpha:bgPhoto.alpha, visible:bgPhoto.visible } : null
+  save(false); try{ skSave(); }catch(e){}
+  const m = csvModalBase('💾 Proje kaydet');
+  const t1 = document.createElement('div'); t1.style.cssText = 'font-size:14px;margin-bottom:8px;';
+  t1.textContent = 'Proje adı (örn. emre dolap). Aynı adla kaydedersen tablette ve bilgisayarda aynı dosyayı açarsın.';
+  const inp = document.createElement('input'); inp.type = 'text'; inp.value = projName();
+  inp.placeholder = 'emre dolap';
+  inp.style.cssText = 'width:100%;font-size:20px;padding:10px;border-radius:8px;border:1px solid #3a3d42;background:#141618;color:#e8e8e8;box-sizing:border-box;';
+  const t2 = document.createElement('div'); t2.style.cssText = 'font-size:12.5px;color:#9aa0a6;margin-top:8px;line-height:1.5;';
+  t2.innerHTML = 'Sonraki ekranda <b>Farklı kaydet</b> ile Google Drive klasörünü seç; diğer cihazda Drive\'dan açarsın.<br>Dosyada: çizim, Elle Çiz, kapak/göz ayarları, derinlik, renk. Görünüm ayarları cihazda kalır.';
+  m.body.append(t1, inp, t2);
+  const ok = () => {
+    const name = (inp.value || '').trim();
+    if(!name){ showToast('Proje adı yaz'); inp.focus(); return; }
+    m.close(); projSetName(name);
+    const store = {};
+    PROJ_KEYS_OWN.concat(PROJ_KEYS_GEN).forEach(k => { try{ const v = localStorage.getItem(k); if(v != null) store[k] = v; }catch(e){} });
+    const data = {
+      format: 'cizgi-cad', version: 2, project: name, savedAt: new Date().toISOString(), device: projDevice(), app: APP_VER,
+      shapes: shapes.map(sh => Object.assign({}, sh, {
+        points: sh.points.map(q=>({x:q.x,y:q.y})),
+        rawCursor: sh.rawCursor ? {x:sh.rawCursor.x, y:sh.rawCursor.y} : undefined
+      })),
+      nextId,
+      photo: bgPhoto ? { dataUrl:bgPhoto.dataUrl, x:bgPhoto.x, y:bgPhoto.y, w:bgPhoto.w, h:bgPhoto.h, alpha:bgPhoto.alpha, visible:bgPhoto.visible } : null,
+      store
+    };
+    const fname = name.replace(/[\\\/:*?"<>|]+/g, '-') + '.cizgi';
+    const blob = new Blob([JSON.stringify(data)], { type:'application/octet-stream' });
+    openExportChooser(blob, fname, 'Proje: ' + name);
   };
-  const d = new Date(), z = n => String(n).padStart(2,'0');
-  const name = `Cizim_${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}.cizgi`;
-  const blob = new Blob([JSON.stringify(data)], { type:'application/octet-stream' });
-  openExportChooser(blob, name, 'Çizim dosyası (.cizgi)');
+  inp.addEventListener('keydown', e => { if(e.key === 'Enter') ok(); });
+  m.foot.append(csvBtn('İptal', () => m.close()), csvBtn('Kaydet', ok, true));
+  setTimeout(() => { inp.focus(); inp.select(); }, 50);
 }
 function openFromFile(){
   const inp = document.createElement('input');
@@ -3396,8 +3460,20 @@ function openFromFile(){
       let d;
       try{ d = JSON.parse(rd.result); }catch(e){ showToast('Bu dosya okunamadı (Çizgi dosyası değil)', 3500); return; }
       if(!d || !Array.isArray(d.shapes)){ showToast('Bu bir Çizgi CAD dosyası değil', 3500); return; }
-      if(shapes.length && !confirm('"' + f.name + '" açılsın mı? Şu anki çizim yerine geçer (Geri al ile döndürebilirsin).')) return;
+      let info = '';
+      if(d.version >= 2 && d.savedAt){
+        const t = new Date(d.savedAt), z = n => String(n).padStart(2, '0');
+        info = '\n\nSon kayıt: ' + (d.device ? d.device + ' · ' : '') + z(t.getDate()) + '.' + z(t.getMonth() + 1) + '.' + t.getFullYear() + ' saat ' + z(t.getHours()) + ':' + z(t.getMinutes());
+      }
+      if(shapes.length && !confirm('"' + (d.project || f.name) + '" açılsın mı? Şu anki çizim yerine geçer (Geri al ile çizimi döndürebilirsin).' + info)) return;
       pushHistory();
+      if(d.version >= 2 && d.store && typeof d.store === 'object'){
+        // proje ayarları: projeye özel olanlar dosyadakiyle değişir (dosyada yoksa silinir), genel ayarlar dosyada varsa gelir
+        PROJ_KEYS_OWN.forEach(k => { try{ if(d.store[k] != null) localStorage.setItem(k, d.store[k]); else localStorage.removeItem(k); }catch(e){} });
+        PROJ_KEYS_GEN.forEach(k => { try{ if(d.store[k] != null) localStorage.setItem(k, d.store[k]); }catch(e){} });
+        try{ sk.strokes = []; sk.items = []; sk.pins = []; skUndoStack.length = 0; skRedoStack.length = 0; skLinks.length = 0; skLoad(); }catch(e){}
+        projSetName(d.project || f.name.replace(/\.cizgi$/i, ''));
+      } else projSetName(f.name.replace(/\.cizgi$/i, ''));
       shapes = d.shapes.map(sh => {
         const o = Object.assign({}, sh);
         o.points = (sh.points||[]).map(q => new Point(q.x, q.y));
@@ -3415,7 +3491,7 @@ function openFromFile(){
         img.src = d.photo.dataUrl;
       }
       autosave(); fitToView();
-      showToast('Açıldı: ' + f.name + ' (' + shapes.length + ' çizim öğesi)', 3500);
+      showToast('Açıldı: ' + (d.project || f.name) + ' (' + shapes.length + ' çizim öğesi)' + (d.device ? ' · son kayıt: ' + d.device : ''), 4000);
     };
     rd.onerror = ()=>showToast('Dosya okunamadı');
     rd.readAsText(f);
@@ -6538,7 +6614,7 @@ document.getElementById('btnDoors').addEventListener('click', () => setDoorMode(
 
 
 // ================= v16.33: KONTROL EKRANI — tablette çalışmayan şeyi bulmak için =================
-const APP_VER = 'v16.37';
+const APP_VER = 'v16.39';
 function openDiagnose(){
   const B = window.AndroidBridge;
   const yes = v => v ? '✅' : '❌';
@@ -6742,7 +6818,7 @@ function tbWanted(){
   const v = tbSetting();
   if(v === 'on') return true;
   if(v === 'off') return false;
-  try{ return matchMedia('(pointer:coarse)').matches; }catch(e){ return false; }
+  return devCoarse();
 }
 const tbCss = document.createElement('style');
 tbCss.textContent = `
@@ -6969,9 +7045,7 @@ function helpCapture(btn){
   return r;
 }
 function helpDevice(){
-  let coarse = false; try{ coarse = matchMedia('(pointer:coarse)').matches; }catch(e){}
-  const m = Math.min(screen.width, screen.height);
-  return (coarse ? (m < 600 ? 'Telefon' : 'Tablet') : 'Bilgisayar') + ' · ekran ' + window.innerWidth + '×' + window.innerHeight;
+  return devName() + ' · ekran ' + window.innerWidth + '×' + window.innerHeight;
 }
 function openHelp(){
   const vis = el => !!el && el.offsetParent !== null && getComputedStyle(el).display !== 'none';
@@ -7027,7 +7101,8 @@ function openHelp(){
     'Ölçü yazısının <b>?</b> kısmına dokun → parçaya isim / açıklama ver',
     'Parçaya uzun bas (ya da sağ tık) → isim, uzunluk, döndür, kopyala, sil',
     'İki parmak → yakınlaştır / kaydır',
-    'Klavye: <b>C</b> karşıya kapat · <b>M</b> ortadan çiz · <b>Ctrl+Z</b> geri · <b>Ctrl+Y</b> ileri · <b>Esc</b> vazgeç · <b>F1</b> yardım'
+    '💾 Dosya → Proje kaydet / Proje aç: aynı projeyi bilgisayarda ve tablette aç (Google Drive ile)',
+    'Klavye: <b>Ctrl+S</b> proje kaydet · <b>C</b> karşıya kapat · <b>M</b> ortadan çiz · <b>Ctrl+Z</b> geri · <b>Ctrl+Y</b> ileri · <b>Esc</b> vazgeç · <b>F1</b> yardım'
   ].map(t => '• ' + t).join('<br>') + '</div>';
   m.body.innerHTML = h;
   const asText = () => rows.map((r, i) => (i + 1) + '. ' + r.icon + ' ' + r.name + (r.items && r.items.length ? ': ' + r.items.map((it, k) => (k + 1) + ' ' + it.label + (it.sub && it.sub.length ? ' (' + it.sub.map((q, j) => (k + 1) + '.' + (j + 1) + ' ' + q.label).join(', ') + ')' : '')).join(', ') : (r.desc ? ' — ' + r.desc : ''))).join('\n');
@@ -7037,6 +7112,7 @@ function openHelp(){
   }), csvBtn('Kapat', () => m.close(), true));
 }
 document.getElementById('btnHelp').addEventListener('click', openHelp);
+try{ projBadge(); }catch(e){}
 document.addEventListener('keydown', e => { if(e.key === 'F1'){ e.preventDefault(); openHelp(); } });
 
 const loaded = load();
