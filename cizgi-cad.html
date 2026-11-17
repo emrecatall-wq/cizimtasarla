@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<title>Çizgi CAD v16.45 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
+<title>Çizgi CAD v16.47 - Fotoğraf Üzerine Çizim ve Tasarla'ya Gönder</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#1b1d1f">
 <meta name="mobile-web-app-capable" content="yes">
@@ -175,7 +175,7 @@
     <span id="stMode">Mod: MDF</span>
     <span id="stCoord">X:0 Y:0 cm</span>
     <span id="stZoom">Ölçek: 100%</span>
-    <span id="stVer" style="color:#ffb454;font-weight:700;">v16.45</span>
+    <span id="stVer" style="color:#ffb454;font-weight:700;">v16.47</span>
     <span id="stProj" style="color:#9fd3ff;font-weight:700;display:none;"></span>
     <span id="stInfo"></span>
   </div>
@@ -2706,9 +2706,17 @@ const CUT_SET_KEY = 'cizgi_cut_settings_v1';
 const DOOR_CFG_KEY = 'cizgi_door_cfg_v2';
 const CAB_DEPTH_KEY = 'cizgi_cab_depth_v1';
 function loadCutSettings(){
-  const def = { maxDoorMm:600, deductMm:3, gapMm:200, backing:true, doors:true, doorBand:true };
+  const def = { maxDoorMm:600, deductMm:3, gapMm:200, backing:true, doors:true, doorBand:true, backType:'cakma', kanalMm:8, kanalBoslukMm:1 };
   try{ const d = JSON.parse(localStorage.getItem(CUT_SET_KEY)); if(d && typeof d==='object') Object.assign(def, d); }catch(e){}
   return def;
+}
+// v16.46: arkalık ölçüsü — çakma: dolabın dış ölçüsü; kanallı: iç ölçü + 2 × (kanal derinliği − boşluk)
+function backSize(info, st){
+  if(st.backType === 'kanal'){
+    const T = MDF_THICKNESS, k = Math.max(0, (+st.kanalMm || 0) - (+st.kanalBoslukMm || 0));
+    return { h: Math.max(10, info.H - 2*T + 2*k), w: Math.max(10, info.W - 2*T + 2*k), label: 'Arkalık (kanallı)' };
+  }
+  return { h: info.H, w: info.W, label: 'Arkalık' };
 }
 function saveCutSettings(v){ try{ localStorage.setItem(CUT_SET_KEY, JSON.stringify(v)); }catch(e){} }
 function loadDoorCfg(){ try{ return JSON.parse(localStorage.getItem(DOOR_CFG_KEY)) || {}; }catch(e){ return {}; } }
@@ -2745,13 +2753,36 @@ function openCutSettings(onDone){
   const cDoors = mkCb('Kapakları kesim listesine ekle', st.doors);
   const cBand = mkCb('Kapaklar 4 kenar bantlı', st.doorBand);
   const cBack = mkCb('Arkalığı kesim listesine ekle', st.backing);
+  // v16.46: arkalık tipi
+  const rowT = document.createElement('div'); rowT.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;';
+  const lbT = document.createElement('div'); lbT.style.cssText = 'flex:1;'; lbT.textContent = 'Arkalık tipi';
+  const selT = document.createElement('select');
+  selT.style.cssText = 'padding:7px 8px;border-radius:6px;border:1px solid #3a3d42;background:#121316;color:#e8e8e8;font-size:14px;';
+  selT.innerHTML = '<option value="cakma">Çakma (arkadan, dış ölçü)</option><option value="kanal">Kanallı (geçme, iç ölçü + kanal)</option>';
+  selT.value = st.backType === 'kanal' ? 'kanal' : 'cakma';
+  rowT.append(lbT, selT); m.body.appendChild(rowT);
+  const iKanal = mk('Kanal derinliği', String(st.kanalMm).replace('.', ','), 'mm');
+  const iBos = mk('Kanalda boşluk (her kenar)', String(st.kanalBoslukMm).replace('.', ','), 'mm');
+  const noteT = document.createElement('div'); noteT.style.cssText = 'font-size:12px;color:#9aa0a6;margin:-2px 0 8px;line-height:1.5;';
+  m.body.appendChild(noteT);
+  const updT = () => {
+    const kan = selT.value === 'kanal';
+    iKanal.parentElement.style.display = kan ? 'flex' : 'none'; iBos.parentElement.style.display = kan ? 'flex' : 'none';
+    const k = numIn(iKanal.value), b = numIn(iBos.value);
+    noteT.textContent = kan ? ('Arkalık = iç ölçü + 2 × (' + (isNaN(k) ? '?' : k) + ' − ' + (isNaN(b) ? '?' : b) + ') mm. Örn. 100 cm dış genişlik → ' + (isNaN(k) || isNaN(b) ? '?' : fmtLenPlain(1000 - 2*MDF_THICKNESS + 2*(k - b))) + ' cm')
+                            : 'Arkalık = dolabın dış ölçüsü (arkadan çakılır).';
+  };
+  selT.onchange = updT; iKanal.oninput = updT; iBos.oninput = updT; updT();
   m.foot.append(
     csvBtn('İptal', ()=>{ m.close(); if(onDone) onDone(false); }),
     csvBtn('Kaydet', ()=>{
       const mx = numIn(iMax.value), dd = numIn(iDed.value), gp = numIn(iGap.value);
       if(!(mx>=10) || !(dd>=0) || !(gp>=0)){ showToast('Değerleri kontrol et'); return; }
-      saveCutSettings({ maxDoorMm: Math.round(mx*100)/10, deductMm: dd, gapMm: Math.round(gp*100)/10, backing:cBack.checked, doors:cDoors.checked, doorBand:cBand.checked });
-      m.close(); showToast('Kesim ayarı kaydedildi'); if(onDone) onDone(true);
+      const kn = numIn(iKanal.value), bs = numIn(iBos.value);
+      if(selT.value === 'kanal' && (!(kn >= 0) || !(bs >= 0) || bs > kn)){ showToast('Kanal derinliği / boşluk değerlerini kontrol et'); return; }
+      saveCutSettings({ maxDoorMm: Math.round(mx*100)/10, deductMm: dd, gapMm: Math.round(gp*100)/10, backing:cBack.checked, doors:cDoors.checked, doorBand:cBand.checked,
+        backType: selT.value, kanalMm: isNaN(kn) ? 8 : kn, kanalBoslukMm: isNaN(bs) ? 1 : bs });
+      m.close(); showToast('Kesim ayarı kaydedildi ✓ · Arkalık: ' + (selT.value === 'kanal' ? 'kanallı' : 'çakma'), 3000); if(onDone) onDone(true);
     }, true)
   );
 }
@@ -2842,7 +2873,7 @@ function buildExtraGroups(mdfShapes, separate){
       frontBoyBant:band, rearBoyBant:band, solDerBant:band, sagDerBant:band, cab: separate?cab:1, extra:kind, order: kind==='arkalik'?1:2 });
   };
   infos.forEach(info => {
-    if(st.backing) add(info.cab, 'arkalik', 'Arkalık', info.H, info.W, 1, '');
+    if(st.backing){ const bs = backSize(info, st); add(info.cab, 'arkalik', bs.label, bs.h, bs.w, 1, ''); }
     // Bölüm ayarı yapılmış dolap: kapaklar ve çekmece önleri bölüm bölüm
     const bd = bayDataFor(info, mdfShapes);
     if(bd){
@@ -3233,7 +3264,8 @@ function computeBom(mdfShapes, depthMmDef){
       const wDoor = info.W/plan.cols - st.deductMm;
       plan.rows.forEach(rh => { doorM2 += plan.cols * wDoor * (rh - st.deductMm) / 1e6; doors += plan.cols; });
     }
-    const backM2 = st.backing ? info.W * info.H / 1e6 : 0;
+    const bsz = backSize(info, st);
+    const backM2 = st.backing ? bsz.w * bsz.h / 1e6 : 0;
     const mirror = (typeof mirrorFor === 'function') && mirrorFor(info);
     const mirrorM2 = mirror ? doorM2 : 0;
     const drawers = bdB ? bdB.doors.filter(d => d.kind === 'cekmece' || d.kind === 'iccekmece').length : (typeof drawerCountFor === 'function') ? drawerCountFor(info) : 0;
@@ -3442,7 +3474,7 @@ function openLibrary(onDone){
 // Dosyanın içinde: çizim, Elle Çiz, kapak/göz ayarları, dolap derinliği, menteşe/kesim ayarları, renk.
 // Görünüm (yakınlaştırma, kaydırma) dosyaya girmez: her cihaz kendi görünümünü korur.
 const PROJ_KEYS_OWN = ['cizgi_bays_v1','cizgi_sketch_v1','cizgi_cab_depth_v1','cizgi_door_cfg_v2','cizgi_drawers_v1','cizgi_mirror_v1'];   // projeye özel
-const PROJ_KEYS_GEN = ['cizgi_hinge_v1','cizgi_cut_settings_v1','cizgi_csv_depth','tasarla_decor_v1','tasarla_door_model_v1'];                                   // genel ayar (dosyada yoksa cihazdaki kalır)
+const PROJ_KEYS_GEN = ['cizgi_hinge_v1','cizgi_cut_settings_v1','cizgi_csv_depth','tasarla_decor_v1','tasarla_door_model_v1','tasarla_wall_v1'];                                   // genel ayar (dosyada yoksa cihazdaki kalır)
 function projName(){ try{ return localStorage.getItem('cizgi_project_name') || ''; }catch(e){ return ''; } }
 function projSetName(n){ try{ localStorage.setItem('cizgi_project_name', n || ''); }catch(e){} projBadge(); }
 function projDevice(){ try{ return helpDevice().split(' ·')[0]; }catch(e){ return ''; } }
@@ -6474,6 +6506,18 @@ function drawDoorOverlay(){
         if(d.kind === 'iccekmece'){ ctx.save(); ctx.fillStyle = 'rgba(126,231,135,0.12)'; ctx.fillRect(x, y, w, h); ctx.fillStyle = '#7ee787'; ctx.font = '600 11px -apple-system, sans-serif'; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; if(h > 14) ctx.fillText('İç', x + 4, y + 2); ctx.restore(); }
         ctx.strokeRect(x, y, w, h);
         ctx.setLineDash([]);
+        // v16.46: kapak / çekmece önü kesim ölçüsü (en × boy, cm) — kapağın alt kısmında
+        if(d.kind !== 'iccekmece'){
+          const ts = fmtLenPlain(d.w) + ' × ' + fmtLenPlain(d.h);
+          ctx.save(); ctx.font = '700 11px -apple-system, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+          const tw = ctx.measureText(ts).width + 10, th = 17;
+          if(tw <= w - 4 && h >= th + 6){
+            const ly = h >= 70 ? y + h - th/2 - 6 : y + h/2;
+            ctx.fillStyle = 'rgba(16,18,20,0.85)'; roundRect(x + w/2 - tw/2, ly - th/2, tw, th, 5); ctx.fill();
+            ctx.fillStyle = d.kind === 'cekmece' ? '#7fe3ef' : '#ffd29e'; ctx.fillText(ts, x + w/2, ly + 0.5);
+          }
+          ctx.restore();
+        }
         if(d.side){
           // menteşe tarafı: kalın kısa çizgi + açılış üçgeni
           const ex = d.side === 'L' ? x : x + w;
@@ -6652,7 +6696,7 @@ document.getElementById('btnDoors').addEventListener('click', () => setDoorMode(
 
 
 // ================= v16.33: KONTROL EKRANI — tablette çalışmayan şeyi bulmak için =================
-const APP_VER = 'v16.45';
+const APP_VER = 'v16.47';
 function openDiagnose(){
   const B = window.AndroidBridge;
   const yes = v => v ? '✅' : '❌';
